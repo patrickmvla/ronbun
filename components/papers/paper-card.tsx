@@ -1,8 +1,10 @@
 // components/papers/paper-card.tsx
 "use client";
 
+// cspell:ignore arXiv
 import * as React from "react";
 import Link from "next/link";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -60,93 +62,114 @@ export function PaperCard({
   const titleNode = terms.length ? highlightText(paper.title, terms) : paper.title;
   const summaryNode = terms.length ? highlightText(paper.summary, terms) : paper.summary;
 
+  const hasCode = (paper.codeUrls?.length ?? 0) > 0;
+  const codeUrl = hasCode ? paper.codeUrls![0] : null;
+
   return (
-    <article
+    <Card
       className={[
-        "group rounded-xl border bg-card transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-sm",
-        compact ? "p-3" : "p-4",
+        "group transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-sm",
+        compact ? "p-0" : "p-0",
         className || "",
       ].join(" ")}
     >
-      <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-        {/* Left: title, meta, badges, abstract */}
-        <div className="min-w-0">
-          {/* Title */}
-          <h3 className="text-[15px] font-medium leading-snug">
-            <Link href={`/paper/${baseId}`} className="hover:underline" title="Open paper page">
-              {titleNode}
-            </Link>
-          </h3>
+      <CardContent className={compact ? "p-3" : "p-4"}>
+        <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+          {/* Left: title, meta, badges, abstract */}
+          <div className="min-w-0">
+            {/* Title */}
+            <h3 className="text-[15px] font-medium leading-snug">
+              <Link href={`/paper/${baseId}`} className="hover:underline" title="Open paper page">
+                {titleNode}
+              </Link>
+            </h3>
 
-          {/* Meta */}
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-            <Badge variant="outline" className="px-1.5 py-0.5 text-[10px]">
-              {firstCat}
-            </Badge>
-            <span className="select-none">•</span>
-            <span>{relativeTime(paper.published)}</span>
-            <span className="select-none">•</span>
-            <span className="truncate">
-              {paper.authors.slice(0, 3).join(", ")}
-              {paper.authors.length > 3 ? " et al." : ""}
-            </span>
+            {/* Meta */}
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              <Badge variant="outline" className="px-1.5 py-0.5 text-[10px]">
+                {firstCat}
+              </Badge>
+              <span className="select-none">•</span>
+              <span>{relativeTime(paper.published)}</span>
+              <span className="select-none">•</span>
+              <span className="truncate">
+                {paper.authors.slice(0, 3).join(", ")}
+                {paper.authors.length > 3 ? " et al." : ""}
+              </span>
+            </div>
+
+            {/* Badges */}
+            <PaperBadges paper={paper} className="mt-2" />
+
+            {/* Abstract */}
+            <div className={compact ? "mt-1" : "mt-2"}>
+              <p className={`text-sm text-muted-foreground ${!open ? "max-h-12 overflow-hidden" : ""}`}>
+                {summaryNode}
+              </p>
+              <button
+                type="button"
+                className="mt-1 inline-flex h-7 items-center rounded px-1.5 text-xs text-primary hover:underline"
+                onClick={() => setOpen((v) => !v)}
+              >
+                {open ? "Show less" : "Quick look"}
+              </button>
+            </div>
+
+            {/* Mobile actions */}
+            {showActions ? (
+              <div className="mt-2 flex gap-2 md:hidden">
+                <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
+                  <Link href={absUrl} target="_blank" rel="noopener noreferrer">
+                    arXiv
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
+                  <Link href={pdfUrl} target="_blank" rel="noopener noreferrer">
+                    PDF
+                    <FileText className="h-3.5 w-3.5" />
+                  </Link>
+                </Button>
+                {hasCode && codeUrl ? (
+                  <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
+                    <Link href={codeUrl} target="_blank" rel="noopener noreferrer">
+                      Code
+                      <Github className="h-3.5 w-3.5" />
+                    </Link>
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
-          {/* Badges */}
-          <PaperBadges paper={paper} className="mt-2" />
-
-          {/* Abstract */}
-          <div className={compact ? "mt-1" : "mt-2"}>
-            <p className={`text-sm text-muted-foreground ${!open ? "max-h-12 overflow-hidden" : ""}`}>
-              {summaryNode}
-            </p>
-            <button
-              type="button"
-              className="mt-1 inline-flex h-7 items-center rounded px-1.5 text-xs text-primary hover:underline"
-              onClick={() => setOpen((v) => !v)}
-            >
-              {open ? "Show less" : "Quick look"}
-            </button>
-          </div>
-
-          {/* Mobile actions */}
+          {/* Right: actions (desktop) */}
           {showActions ? (
-            <div className="mt-2 flex gap-2 md:hidden">
+            <div className="hidden items-start justify-end gap-2 md:flex">
               <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
-                <Link href={absUrl} target="_blank" rel="noreferrer">
+                <Link href={absUrl} target="_blank" rel="noopener noreferrer">
                   arXiv
                   <ExternalLink className="h-3.5 w-3.5" />
                 </Link>
               </Button>
               <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
-                <Link href={pdfUrl} target="_blank" rel="noreferrer">
+                <Link href={pdfUrl} target="_blank" rel="noopener noreferrer">
                   PDF
                   <FileText className="h-3.5 w-3.5" />
                 </Link>
               </Button>
+              {hasCode && codeUrl ? (
+                <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
+                  <Link href={codeUrl} target="_blank" rel="noopener noreferrer">
+                    Code
+                    <Github className="h-3.5 w-3.5" />
+                  </Link>
+                </Button>
+              ) : null}
             </div>
           ) : null}
         </div>
-
-        {/* Right: actions (desktop) */}
-        {showActions ? (
-          <div className="hidden items-start justify-end gap-2 md:flex">
-            <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
-              <Link href={absUrl} target="_blank" rel="noreferrer">
-                arXiv
-                <ExternalLink className="h-3.5 w-3.5" />
-              </Link>
-            </Button>
-            <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
-              <Link href={pdfUrl} target="_blank" rel="noreferrer">
-                PDF
-                <FileText className="h-3.5 w-3.5" />
-              </Link>
-            </Button>
-          </div>
-        ) : null}
-      </div>
-    </article>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -194,46 +217,44 @@ export function PaperBadges({
   return (
     <div className={["flex flex-wrap items-center gap-1.5", className || ""].join(" ")}>
       {hasCode && (
-        <a
-          href={codeUrl!}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 rounded-md border bg-card/80 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-accent"
-          title="Open repository"
-        >
-          <Github className="h-3.5 w-3.5 text-primary" />
-          <span>Code</span>
-          {typeof paper.repoStars === "number" ? (
-            <span className="ml-1 inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
-              <Star className="h-3 w-3 fill-current text-primary" />
-              {formatCount(paper.repoStars)}
+        <Badge asChild variant="secondary" className="gap-1 px-1.5 py-0.5 text-[10px]">
+          <a href={codeUrl!} target="_blank" rel="noopener noreferrer" title="Open repository">
+            <span className="inline-flex items-center gap-1">
+              <Github className="h-3.5 w-3.5 text-primary" />
+              <span>Code</span>
+              {typeof paper.repoStars === "number" ? (
+                <span className="ml-1 inline-flex items-center gap-0.5 text-muted-foreground">
+                  <Star className="h-3 w-3 fill-current text-primary" />
+                  {formatCount(paper.repoStars)}
+                </span>
+              ) : null}
             </span>
-          ) : null}
-        </a>
+          </a>
+        </Badge>
       )}
 
       {hasBench && (
-        <span className="inline-flex items-center gap-1 rounded-md border bg-card/80 px-1.5 py-0.5 text-[10px]">
+        <Badge variant="outline" className="gap-1 px-1.5 py-0.5 text-[10px]">
           <BarChart3 className="h-3.5 w-3.5 text-primary" />
           <span>Benchmarks</span>
           <span className="text-muted-foreground">
             {benchCount > 2 ? `${benchCount}` : paper.benchmarks!.join(", ")}
           </span>
-        </span>
+        </Badge>
       )}
 
       {hasWeights && (
-        <span className="inline-flex items-center gap-1 rounded-md border bg-card/80 px-1.5 py-0.5 text-[10px]">
+        <Badge variant="outline" className="gap-1 px-1.5 py-0.5 text-[10px]">
           <Package className="h-3.5 w-3.5 text-primary" />
           <span>Weights</span>
-        </span>
+        </Badge>
       )}
 
       {hasSota && (
-        <span className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+        <Badge variant="secondary" className="gap-1 px-1.5 py-0.5 text-[10px] border-primary/30 bg-primary/10 text-primary">
           <Trophy className="h-3.5 w-3.5" />
           <span>SOTA claim</span>
-        </span>
+        </Badge>
       )}
     </div>
   );
@@ -277,10 +298,14 @@ function normalizeTerms(input?: string | string[]) {
   return Array.from(new Set(tokens.map((t) => t.toLowerCase())));
 }
 
+function escapeRegex(str: string): string {
+  // Escapes special regex characters
+  return str.replace(/[-\/\\^$*+?.()|[```{}]/g, '\\$&');
+}
+
 function highlightText(text: string, terms: string[]) {
   if (!terms.length) return text;
-  // Build a single regex with all terms escaped
-  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|\```math```]/g, "\\$&"));
+  const escaped = terms.map(escapeRegex);
   const re = new RegExp(`(${escaped.join("|")})`, "gi");
   const parts = text.split(re);
   return parts.map((part, i) =>

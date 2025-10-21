@@ -31,7 +31,7 @@ export default function Navbar() {
 
           {/* Brand */}
           <Link
-            href="/feed"
+            href="/"
             className="flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-md"
             aria-label="Ronbun home"
           >

@@ -1,7 +1,15 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { LogIn, LogOut, Settings, User as UserIcon } from "lucide-react";
+import { useMemo, useState } from "react";
+import Link from "next/link";
+import { usePathname, useSearchParams, useRouter } from "next/navigation";
+import {
+  LogIn,
+  LogOut,
+  Settings,
+  User as UserIcon,
+  Loader2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,9 +31,19 @@ interface UserMenuProps {
 
 export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const search = useSearchParams();
+
+  const [signingOut, setSigningOut] = useState(false);
+
+  const next = useMemo(() => {
+    const qs = search?.toString();
+    const current = qs ? `${pathname}?${qs}` : pathname || "/";
+    return encodeURIComponent(current);
+  }, [pathname, search]);
 
   const handleSignIn = () => {
-    router.push("/auth/sign-in");
+    router.push(`/auth/sign-in?next=${next}`);
   };
 
   const handleSettings = () => {
@@ -33,12 +51,20 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
   };
 
   const handleSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
     try {
       await onSignOut();
     } catch (error) {
-      console.error("Sign out error:", error);
+      // Optional: surface a toast here
+       console.error("Sign out error:", error);
+    } finally {
+      setSigningOut(false);
     }
   };
+
+  const displayName = getUserDisplayName(user);
+  const avatarAlt = user ? `${displayName}'s avatar` : "User avatar";
 
   return (
     <DropdownMenu>
@@ -47,43 +73,43 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
           variant="ghost"
           size="sm"
           className="px-2 focus-visible:ring-2 focus-visible:ring-primary"
-          disabled={isLoading}
-          aria-label={user ? `Account menu for ${user.name}` : "Account menu"}
+          disabled={isLoading || signingOut}
+          aria-label={user ? `Account menu for ${displayName}` : "Account menu"}
+          aria-busy={isLoading || signingOut}
         >
           <div className="flex items-center gap-2">
             <Avatar className="h-6 w-6">
               {user?.avatar ? (
-                <AvatarImage
-                  src={user.avatar}
-                  alt={`${user.name}'s avatar`}
-                />
+                <AvatarImage src={user.avatar} alt={avatarAlt} />
               ) : (
                 <AvatarFallback className="text-xs">
-                  {user ? (
-                    getUserInitials(user.name)
+                  {isLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : user ? (
+                    getUserInitials(displayName)
                   ) : (
                     <UserIcon className="h-4 w-4" aria-hidden="true" />
                   )}
                 </AvatarFallback>
               )}
             </Avatar>
-            <span className="hidden sm:inline text-sm">
-              {getUserDisplayName(user)}
+            <span className="hidden sm:inline text-sm max-w-[160px] truncate">
+              {isLoading ? "Loading…" : displayName}
             </span>
           </div>
         </Button>
       </DropdownMenuTrigger>
 
-      <DropdownMenuContent align="end" className="w-60">
+      <DropdownMenuContent align="end" className="w-64">
         {user ? (
           <>
-            <DropdownMenuLabel>
-              <div className="flex flex-col">
-                <span className="truncate font-medium">{user.name}</span>
-                <span className="truncate text-xs font-normal text-muted-foreground">
+            <DropdownMenuLabel className="space-y-0.5">
+              <div className="truncate font-medium">{displayName}</div>
+              {user.email ? (
+                <div className="truncate text-xs text-muted-foreground">
                   {user.email}
-                </span>
-              </div>
+                </div>
+              ) : null}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleSettings}>
@@ -91,16 +117,32 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
               Settings
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleSignOut}>
-              <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+            <DropdownMenuItem
+              onClick={handleSignOut}
+              disabled={signingOut}
+              className="text-destructive focus:text-destructive"
+            >
+              {signingOut ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+              )}
               Sign out
             </DropdownMenuItem>
           </>
         ) : (
-          <DropdownMenuItem onClick={handleSignIn}>
-            <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />
-            Sign in
-          </DropdownMenuItem>
+          <>
+            <DropdownMenuLabel>Welcome</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={handleSignIn} disabled={isLoading}>
+              <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />
+              Sign in
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link href="/feed">Continue without an account</Link>
+            </DropdownMenuItem>
+          </>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

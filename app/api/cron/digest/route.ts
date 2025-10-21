@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/cron/digest/route.ts
 // Weekly/daily digest generator and sender.
 // - Protected by CRON_SECRET
@@ -20,10 +21,9 @@
 
 import { NextResponse } from "next/server";
 import { db, schema } from "@/lib/drizzle/db";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { assertCronSecret } from "@/lib/auth";
-import { computePaperScore, type PaperForScoring } from "@/lib/scoring";
 import { sendDigestEmail, type DigestItem } from "@/lib/email";
 
 export const runtime = "nodejs";
@@ -45,13 +45,21 @@ export async function POST(req: Request) {
     const dry = asBool(url.searchParams.get("dry"), false);
     const schedule = asBool(url.searchParams.get("schedule"), false);
     const sendNow = asBool(url.searchParams.get("send"), false);
-    const limitUsers = clampInt(url.searchParams.get("limitUsers"), DEFAULT_LIMIT_USERS, 1, 1000);
+    const limitUsers = clampInt(
+      url.searchParams.get("limitUsers"),
+      DEFAULT_LIMIT_USERS,
+      1,
+      1000
+    );
     const atParam = url.searchParams.get("at");
     const at = toDate(atParam) ?? new Date();
 
     const usersParam = (url.searchParams.get("users") || "").trim();
     const userIds = usersParam
-      ? usersParam.split(",").map((s) => s.trim()).filter(Boolean)
+      ? usersParam
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       : await getUserIdsWithWatchlists(limitUsers);
 
     const results: Array<{
@@ -63,11 +71,24 @@ export async function POST(req: Request) {
       error?: string;
     }> = [];
 
+    if (userIds.length === 0) {
+      return json({
+        startedAt,
+        finishedAt: new Date(),
+        params: { days, per, dry, schedule, send: sendNow, limitUsers },
+        usersProcessed: 0,
+        results,
+      });
+    }
+
     // Preload = select recent candidate papers (common pool) to filter per user
     const since = new Date(at.getTime() - days * 24 * 60 * 60 * 1000);
     const candidates = await getRecentCandidates(since, 400); // cap pool per digest run
-    const structuredByPaper = await getLatestStructuredByPaper(candidates.map((c) => c.id));
-    const scoresByPaper = await getScoresByPaper(candidates.map((c) => c.id));
+    const candidateIds = candidates.map((c) => c.id);
+
+    const structuredByPaper = await getLatestStructuredByPaper(candidateIds);
+    const scoresByPaper = await getScoresByPaper(candidateIds);
+    const authorsByPaper = await getAuthorsByPaper(candidateIds); // new: author matching
 
     for (const userId of userIds) {
       try {
@@ -78,7 +99,13 @@ export async function POST(req: Request) {
         }
 
         // Rank candidates per user by watchlist matches + global score
-        const ranked = rankForUser(candidates, structuredByPaper, scoresByPaper, watchlists);
+        const ranked = rankForUser(
+          candidates,
+          structuredByPaper,
+          scoresByPaper,
+          authorsByPaper,
+          watchlists
+        );
         const top = ranked.slice(0, per);
 
         if (top.length === 0) {
@@ -87,11 +114,22 @@ export async function POST(req: Request) {
         }
 
         // Build digest items and DB items
-        const appUrl = (process.env.APP_URL || "").replace(/\/+$/, "") || "http://localhost:3000";
+        const appUrl =
+          (process.env.APP_URL || "").replace(/\/+$/, "") ||
+          "http://localhost:3000";
         const digestItems: DigestItem[] = top.map((t) =>
-          toDigestItem(t.paper, t.reason, appUrl, structuredByPaper.get(t.paper.id)?.benchmarks || [])
+          toDigestItem(
+            t.paper,
+            t.reason,
+            appUrl,
+            structuredByPaper.get(t.paper.id)?.benchmarks || [],
+            authorsByPaper.get(t.paper.id) || []
+          )
         );
-        const dbItems = top.map((t) => ({ paperId: t.paper.id, reason: t.reason }));
+        const dbItems = top.map((t) => ({
+          paperId: t.paper.id,
+          reason: t.reason,
+        }));
 
         // Write digest row if schedule requested
         let scheduled = false;
@@ -148,7 +186,7 @@ export async function POST(req: Request) {
 async function getUserIdsWithWatchlists(limit: number): Promise<string[]> {
   const rows = await db
     .select({ userId: schema.watchlists.userId })
-    .from(schema.watchlists)
+    .from(schema.watchlists);
   // drizzle doesn't support distinct on easily; dedupe in code
   const ids = Array.from(new Set(rows.map((r) => r.userId))).slice(0, limit);
   return ids;
@@ -171,8 +209,13 @@ async function getWatchlists(userId: string) {
 }
 
 type PaperRow = typeof schema.papers.$inferSelect;
+type StructuredRow = typeof schema.paperStructured.$inferSelect;
+type ScoreRow = typeof schema.paperScores.$inferSelect;
 
-async function getRecentCandidates(since: Date, cap: number): Promise<PaperRow[]> {
+async function getRecentCandidates(
+  since: Date,
+  cap: number
+): Promise<PaperRow[]> {
   // Top-N recent papers since date
   const rows = await db
     .select()
@@ -184,47 +227,80 @@ async function getRecentCandidates(since: Date, cap: number): Promise<PaperRow[]
 }
 
 async function getLatestStructuredByPaper(paperIds: string[]) {
-  if (paperIds.length === 0) return new Map<string, any>();
+  if (paperIds.length === 0) return new Map<string, StructuredRow>();
   const rows = await db
     .select()
     .from(schema.paperStructured)
     .where(inArray(schema.paperStructured.paperId, paperIds))
     .orderBy(desc(schema.paperStructured.createdAt));
-  const map = new Map<string, any>();
+  const map = new Map<string, StructuredRow>();
   for (const r of rows) {
-    if (!map.has(r.paperId)) map.set(r.paperId, r);
+    if (!map.has(r.paperId)) map.set(r.paperId, r); // first row per paper (latest)
   }
   return map;
 }
 
 async function getScoresByPaper(paperIds: string[]) {
-  if (paperIds.length === 0) return new Map<string, any>();
+  if (paperIds.length === 0) return new Map<string, ScoreRow>();
   const rows = await db
     .select()
     .from(schema.paperScores)
     .where(inArray(schema.paperScores.paperId, paperIds));
-  const map = new Map<string, any>();
+  const map = new Map<string, ScoreRow>();
   for (const r of rows) map.set(r.paperId, r);
+  return map;
+}
+
+async function getAuthorsByPaper(paperIds: string[]) {
+  if (paperIds.length === 0) return new Map<string, string[]>();
+  const rows = await db
+    .select({
+      paperId: schema.paperAuthors.paperId,
+      name: schema.authors.name,
+      position: schema.paperAuthors.position,
+    })
+    .from(schema.paperAuthors)
+    .innerJoin(
+      schema.authors,
+      eq(schema.paperAuthors.authorId, schema.authors.id)
+    )
+    .where(inArray(schema.paperAuthors.paperId, paperIds))
+    .orderBy(schema.paperAuthors.paperId, schema.paperAuthors.position);
+  const map = new Map<string, string[]>();
+  for (const r of rows) {
+    const arr = map.get(r.paperId) ?? [];
+    arr.push(r.name);
+    map.set(r.paperId, arr);
+  }
   return map;
 }
 
 function rankForUser(
   candidates: PaperRow[],
-  structuredByPaper: Map<string, any>,
-  scoresByPaper: Map<string, any>,
+  structuredByPaper: Map<string, StructuredRow>,
+  scoresByPaper: Map<string, ScoreRow>,
+  authorsByPaper: Map<string, string[]>,
   watchlists: Array<{ type: string; terms: string[]; categories?: string[] }>
 ): Array<{ paper: PaperRow; reason: string; score: number }> {
   const arr: Array<{ paper: PaperRow; reason: string; score: number }> = [];
 
   for (const p of candidates) {
     // Basic category filtering (if any watchlist has category restriction, accept if it matches any)
-    const wlFiltered = watchlists.filter((wl) => !wl.categories?.length || wl.categories.some((c) => (p.categories ?? []).includes(c)));
+    const wlFiltered = watchlists.filter(
+      (wl) =>
+        !wl.categories?.length ||
+        wl.categories.some((c) => (p.categories ?? []).includes(c))
+    );
     if (wlFiltered.length === 0) continue;
 
-    const text = `${(p.title || "").toLowerCase()} ${(p.abstract || "").toLowerCase()}`;
+    const text = `${(p.title || "").toLowerCase()} ${(
+      p.abstract || ""
+    ).toLowerCase()}`;
     const structured = structuredByPaper.get(p.id);
-    const benchmarks = (structured?.benchmarks ?? []).map((b: string) => String(b).toLowerCase());
-    const authors: string[] = []; // author names not preloaded; could be added if needed
+    const benchmarks = (structured?.benchmarks ?? []).map((b: string) =>
+      String(b).toLowerCase()
+    );
+    const authors = (authorsByPaper.get(p.id) ?? []).map(normalizeName);
 
     let points = 0;
     const hits: string[] = [];
@@ -270,20 +346,31 @@ function rankForUser(
   }
 
   // Sort by composite desc, then published desc
-  arr.sort((a, b) => (b.score - a.score) || (new Date(b.paper.publishedAt as any).getTime() - new Date(a.paper.publishedAt as any).getTime()));
+  arr.sort(
+    (a, b) =>
+      b.score - a.score || toMs(b.paper.publishedAt) - toMs(a.paper.publishedAt)
+  );
   return arr;
 }
 
 /* ========== Email & DB helpers ========== */
 
-function toDigestItem(p: PaperRow, reason: string, appUrl: string, benchmarks: string[]): DigestItem {
+function toDigestItem(
+  p: PaperRow,
+  reason: string,
+  appUrl: string,
+  benchmarks: string[],
+  authors: string[]
+): DigestItem {
   const baseId = p.arxivIdBase;
   return {
     title: p.title,
     arxivId: baseId,
-    authors: [], // can be populated if you join authors
+    authors,
     categories: p.categories ?? [],
-    published: p.publishedAt ? new Date(p.publishedAt).toISOString() : undefined,
+    published: p.publishedAt
+      ? new Date(p.publishedAt as any).toISOString()
+      : undefined,
     quickTake: undefined,
     reason,
     score: undefined,
@@ -307,7 +394,11 @@ async function getUserEmail(userId: string): Promise<string | null> {
       sql`select id, email from auth.users where id = ${userId} limit 1`
     );
     const row = Array.isArray(rows) ? rows[0] : (rows as any)?.rows?.[0];
-    const email = row?.email ?? (Array.isArray((rows as any)?.rows) ? (rows as any).rows[0]?.email : null);
+    const email =
+      row?.email ??
+      (Array.isArray((rows as any)?.rows)
+        ? (rows as any).rows[0]?.email
+        : null);
     return email || null;
   } catch {
     return null;
@@ -331,11 +422,19 @@ async function getUserDisplayName(userId: string): Promise<string | null> {
 function json(body: unknown, status = 200, headers?: Record<string, string>) {
   return new NextResponse(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...(headers || {}) },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...(headers || {}),
+    },
   });
 }
 
-function clampInt(v: string | null, def: number, min: number, max: number): number {
+function clampInt(
+  v: string | null,
+  def: number,
+  min: number,
+  max: number
+): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return def;
   return Math.min(max, Math.max(min, Math.trunc(n)));
@@ -344,7 +443,24 @@ function clampInt(v: string | null, def: number, min: number, max: number): numb
 function toDate(v?: string | null) {
   if (!v) return null;
   const d = new Date(v);
-  return isFinite(d.getTime()) ? d : null;
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function toMs(v: unknown): number {
+  try {
+    if (
+      v &&
+      typeof v === "object" &&
+      typeof (v as any).getTime === "function"
+    ) {
+      const n = (v as any as Date).getTime();
+      if (Number.isFinite(n)) return n;
+    }
+    const n = new Date(String(v)).getTime();
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function normalizeName(s: string): string {
@@ -353,7 +469,32 @@ function normalizeName(s: string): string {
 
 function includesToken(hay: string, needle: string): boolean {
   if (!hay || !needle) return false;
-  const escaped = needle.replace(/[.*+?^${}()|[```\```/g, "\\$&");
-  const re = new RegExp(`(^|\\W)${escaped}(?=\\W|$)`, "i");
-  return re.test(hay);
+
+  // Safely escape the user-provided term for RegExp.
+  // This is the canonical escape set.
+  const escaped = String(needle)
+    .trim()
+    .replace(/[\\^$.*+?()[```{}|]/g, "\\$&");
+
+  try {
+    // Prefer Unicode-aware token boundaries: non-letter/number/underscore
+    // Requires the 'u' flag for \p{}.
+    const re = new RegExp(
+      `(^|[^\\p{L}\\p{N}_])${escaped}(?=[^\\p{L}\\p{N}_]|$)`,
+      "iu"
+    );
+    return re.test(hay);
+  } catch {
+    // Fallback for environments without Unicode property escapes
+    const re = new RegExp(
+      `(^|[^A-Za-z0-9_])${escaped}(?=[^A-Za-z0-9_]|$)`,
+      "i"
+    );
+    return re.test(hay);
+  }
+}
+
+function asBool(v: string | null, def: boolean): boolean {
+  if (v == null) return def;
+  return v === "1" || v.toLowerCase() === "true" || v.toLowerCase() === "yes";
 }

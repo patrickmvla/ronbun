@@ -62,7 +62,7 @@ export type RenderedEmail = {
 /* ================= Render ================= */
 
 export function renderDigestEmail({
-  to,
+  
   userName,
   items,
   appUrl = process.env.APP_URL || "https://example.com",

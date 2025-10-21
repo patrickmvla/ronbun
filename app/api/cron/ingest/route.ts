@@ -1,33 +1,27 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/cron/ingest/route.ts
-// Ingest recent arXiv papers into Postgres (Supabase) via Drizzle.
-// - Protected with CRON_SECRET (Authorization: Bearer <secret> or x-cron-secret header)
-// - Iterates categories, fetches N pages per category, upserts papers/authors/joins/versions
-// - Polite to arXiv (uses lib/arxiv polite fetch + small page sizes)
-
 import { NextResponse } from "next/server";
 import { db, schema } from "@/lib/drizzle/db";
-import { eq, and } from "drizzle-orm";
+import { eq, inArray, and } from "drizzle-orm";
 import { searchArxiv, type ArxivItem } from "@/lib/arxiv";
 import { assertCronSecret } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Defaults (can be overridden via query params)
 const DEFAULT_CATS = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.NE", "stat.ML"] as const;
-const DEFAULT_PAGES = 2; // pages per category
-const DEFAULT_PAGE_SIZE = 25; // max per page (keep polite)
-const DEFAULT_DAYS = 3; // lookback window; set 0 to disable
+const DEFAULT_PAGES = 2;
+const DEFAULT_PAGE_SIZE = 25;
+const DEFAULT_DAYS = 3;
 
 export async function POST(req: Request) {
   let runId: string | null = null;
   const startedAt = new Date();
   let totalFetched = 0;
   let totalProcessed = 0;
-  let notes: string[] = [];
+  const notes: string[] = [];
 
   try {
-    // Protect cron
     assertCronSecret(req);
 
     const url = new URL(req.url);
@@ -35,6 +29,9 @@ export async function POST(req: Request) {
     const pagesParam = url.searchParams.get("pages");
     const sizeParam = url.searchParams.get("size") || url.searchParams.get("max");
     const daysParam = url.searchParams.get("days");
+    const pruneParam = url.searchParams.get("prune");
+    const maxMsParam = url.searchParams.get("maxMs");
+    const concurrencyParam = url.searchParams.get("concurrency");
 
     const cats = catsParam
       ? catsParam.split(",").map((s) => s.trim()).filter(Boolean)
@@ -43,10 +40,22 @@ export async function POST(req: Request) {
     const PAGES = clampInt(pagesParam, DEFAULT_PAGES, 1, 10);
     const PAGE_SIZE = clampInt(sizeParam, DEFAULT_PAGE_SIZE, 1, 50);
     const LOOKBACK_DAYS = clampInt(daysParam, DEFAULT_DAYS, 0, 30);
+    const PRUNE_AUTHORS = asBool(pruneParam, false);
+    const MAX_MS = clampInt(maxMsParam, 45_000, 5_000, 5 * 60_000); // default 45s
+    const CONCURRENCY = clampInt(concurrencyParam, 3, 1, 8); // default 3
 
-    notes.push(`cats=${cats.join("|")}`, `pages=${PAGES}`, `size=${PAGE_SIZE}`, `days=${LOOKBACK_DAYS}`);
+    const deadline = Date.now() + MAX_MS;
 
-    // Create run row
+    notes.push(
+      `cats=${cats.join("|")}`,
+      `pages=${PAGES}`,
+      `size=${PAGE_SIZE}`,
+      `days=${LOOKBACK_DAYS}`,
+      `prune=${PRUNE_AUTHORS ? 1 : 0}`,
+      `maxMs=${MAX_MS}`,
+      `concurrency=${CONCURRENCY}`,
+    );
+
     const insertedRun = await db
       .insert(schema.ingestRuns)
       .values({
@@ -59,11 +68,15 @@ export async function POST(req: Request) {
 
     const since = LOOKBACK_DAYS > 0 ? new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000) : null;
 
-    // Main loop
-    for (const cat of cats) {
+    outer: for (const cat of cats) {
       for (let page = 0; page < PAGES; page++) {
+        if (Date.now() > deadline) {
+          notes.push(`deadline reached before fetch: cat=${cat}, page=${page}`);
+          break outer;
+        }
+
         const start = page * PAGE_SIZE;
-        // Fetch arXiv
+        notes.push(`fetch cat=${cat} page=${page} start=${start}`);
         const items = await searchArxiv({
           q: `cat:${cat}`,
           start,
@@ -73,31 +86,54 @@ export async function POST(req: Request) {
         });
 
         totalFetched += items.length;
-        if (items.length === 0) break;
-
-        // Filter by lookback if configured
-        const filtered = since
-          ? items.filter((it) => new Date(it.published).getTime() >= since.getTime())
-          : items;
-
-        // Process each item
-        for (const it of filtered) {
-          const ok = await upsertPaperFromArxivItem(it, cat);
-          if (ok) totalProcessed++;
+        if (items.length === 0) {
+          notes.push(`no more items cat=${cat} page=${page}`);
+          break;
         }
 
-        // If lookback excludes the rest (older), stop paging this category early
-        if (since && filtered.length < items.length) break;
+        const filtered = since
+          ? items.filter((it) => {
+              const t = new Date(it.published).getTime();
+              return Number.isFinite(t) && t >= since.getTime();
+            })
+          : items;
+
+        let processedHere = 0;
+        let hitDeadline = false;
+
+        await mapLimit(filtered, CONCURRENCY, async (it) => {
+          if (Date.now() > deadline) {
+            hitDeadline = true;
+            return;
+          }
+          try {
+            const ok = await upsertPaperFromArxivItem(it, cat, PRUNE_AUTHORS);
+            if (ok) processedHere++;
+          } catch (e: any) {
+            notes.push(`err(${it.arxivId}): ${e?.message || "upsert error"}`);
+          }
+        });
+
+        totalProcessed += processedHere;
+
+        if (hitDeadline) {
+          notes.push(`deadline reached during upsert: page=${page}`);
+          break outer;
+        }
+
+        if (since && filtered.length < items.length) {
+          notes.push(`hit lookback; stopping cat=${cat} at page=${page}`);
+          break;
+        }
       }
     }
 
-    // Finish run
     await db
       .update(schema.ingestRuns)
       .set({
         finishedAt: new Date(),
         status: "ok",
-        itemsFetched: totalProcessed,
+        itemsFetched: totalFetched,
         note: notes.join("; "),
       })
       .where(eq(schema.ingestRuns.id, runId!));
@@ -112,13 +148,16 @@ export async function POST(req: Request) {
         pages: PAGES,
         size: PAGE_SIZE,
         lookbackDays: LOOKBACK_DAYS,
+        maxMs: MAX_MS,
+        concurrency: CONCURRENCY,
         fetched: totalFetched,
         processed: totalProcessed,
+        notes,
+        errorsCount: notes.filter((n) => n.startsWith("err(")).length,
       },
       200
     );
   } catch (err: any) {
-    // Update run as failed
     if (runId) {
       try {
         await db
@@ -139,12 +178,9 @@ export async function POST(req: Request) {
 
 /* ========== Core upsert ========== */
 
-async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string): Promise<boolean> {
+async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string, pruneAuthors = false): Promise<boolean> {
   const { baseId, version } = splitArxivId(item.arxivId);
-  const categories = dedupe([
-    ...(item.categories ?? []),
-    ...(queryCat ? [queryCat] : []),
-  ]);
+  const categories = dedupe([...(item.categories ?? []), ...(queryCat ? [queryCat] : [])]);
 
   // Find existing paper by base ID
   const existing = await db.query.papers.findFirst({
@@ -154,7 +190,6 @@ async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string): Pro
   let paperId: string;
 
   if (!existing) {
-    // Insert paper
     const inserted = await db
       .insert(schema.papers)
       .values({
@@ -166,7 +201,7 @@ async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string): Pro
         primaryCategory: queryCat ?? categories[0] ?? null,
         publishedAt: toDate(item.published) ?? new Date(),
         updatedAt: toDate(item.updated) ?? toDate(item.published) ?? new Date(),
-        pdfUrl: item.pdfUrl,
+        pdfUrl: item.pdfUrl ?? null,
         absUrl: `https://arxiv.org/abs/${baseId}`,
       })
       .returning({ id: schema.papers.id });
@@ -174,10 +209,7 @@ async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string): Pro
   } else {
     paperId = existing.id;
 
-    // Merge categories
     const mergedCats = dedupe([...(existing.categories ?? []), ...categories]);
-
-    // Update if newer version or new metadata
     const newLatest = Math.max(Number(existing.latestVersion || 1), version);
     await db
       .update(schema.papers)
@@ -188,13 +220,46 @@ async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string): Pro
         categories: mergedCats,
         primaryCategory: existing.primaryCategory ?? queryCat ?? mergedCats[0] ?? null,
         updatedAt: toDate(item.updated) ?? existing.updatedAt ?? existing.publishedAt,
-        pdfUrl: item.pdfUrl ?? existing.pdfUrl,
+        pdfUrl: item.pdfUrl ?? existing.pdfUrl ?? null,
         absUrl: existing.absUrl ?? `https://arxiv.org/abs/${baseId}`,
       })
       .where(eq(schema.papers.id, paperId));
   }
 
-  // Insert version row if missing
+  // Ensure authors in batch
+  const names = Array.isArray(item.authors) ? item.authors : [];
+  const authorMap = await ensureAuthors(names);
+
+  // Join — upsert positions
+  for (let i = 0; i < names.length; i++) {
+    const authorId = authorMap.get(names[i]!)!;
+    await db
+      .insert(schema.paperAuthors)
+      .values({ paperId, authorId, position: i })
+      .onConflictDoUpdate({
+        target: [schema.paperAuthors.paperId, schema.paperAuthors.authorId],
+        set: { position: i },
+      });
+  }
+
+  // Optionally prune authors that are no longer on the paper
+  if (pruneAuthors) {
+    const rows = await db
+      .select({ authorId: schema.paperAuthors.authorId })
+      .from(schema.paperAuthors)
+      .where(eq(schema.paperAuthors.paperId, paperId));
+
+    const keepSet = new Set(names.map((n) => authorMap.get(n)!));
+    const toRemove = rows.map((r) => r.authorId).filter((id) => !keepSet.has(id));
+    if (toRemove.length > 0) {
+      await db
+        .delete(schema.paperAuthors)
+        .where(and(eq(schema.paperAuthors.paperId, paperId), inArray(schema.paperAuthors.authorId, toRemove)))
+        .catch(() => undefined);
+    }
+  }
+
+  // Version row if missing
   const haveVersion = await db.query.paperVersions.findFirst({
     where: (v, { and, eq }) => and(eq(v.paperId, paperId), eq(v.version, version)),
   });
@@ -206,40 +271,6 @@ async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string): Pro
       abstract: item.summary,
       updatedAt: toDate(item.updated) ?? new Date(),
     });
-  }
-
-  // Authors (ordered)
-  for (let i = 0; i < (item.authors?.length ?? 0); i++) {
-    const name = item.authors![i]!;
-    const norm = normalizeName(name);
-
-    // Upsert author by name
-    let authorId: string | null = null;
-    const found = await db.query.authors.findFirst({
-      where: (a, { eq }) => eq(a.name, name),
-    });
-    if (found) {
-      authorId = found.id;
-      // Try to backfill norm name if missing
-      if (!found.normName) {
-        await db
-          .update(schema.authors)
-          .set({ normName: norm })
-          .where(eq(schema.authors.id, found.id));
-      }
-    } else {
-      const inserted = await db
-        .insert(schema.authors)
-        .values({ name, normName: norm })
-        .returning({ id: schema.authors.id });
-      authorId = inserted[0].id;
-    }
-
-    // Join (ignore if exists)
-    await db
-      .insert(schema.paperAuthors)
-      .values({ paperId, authorId, position: i })
-      .onConflictDoNothing({ target: [schema.paperAuthors.paperId, schema.paperAuthors.authorId] });
   }
 
   return true;
@@ -281,4 +312,65 @@ function normalizeName(s: string): string {
 
 function dedupe<T>(arr: T[]): T[] {
   return Array.from(new Set(arr));
+}
+
+function asBool(v: string | null, def: boolean): boolean {
+  if (v == null) return def;
+  const s = v.toLowerCase();
+  return s === "1" || s === "true" || s === "yes";
+}
+
+async function mapLimit<T>(
+  arr: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  if (arr.length === 0) return;
+  let i = 0;
+  const workers = Array.from({ length: Math.min(limit, arr.length) }, () =>
+    (async function worker() {
+      while (true) {
+        const idx = i++;
+        if (idx >= arr.length) break;
+        await fn(arr[idx]!, idx);
+      }
+    })()
+  );
+  await Promise.all(workers);
+}
+
+// Batch-create/find authors and return a map name -> id
+async function ensureAuthors(names: string[]): Promise<Map<string, string>> {
+  const uniqueNames = Array.from(new Set(names.filter(Boolean)));
+  if (uniqueNames.length === 0) return new Map();
+
+  const existing = await db
+    .select({ id: schema.authors.id, name: schema.authors.name })
+    .from(schema.authors)
+    .where(inArray(schema.authors.name, uniqueNames));
+
+  const have = new Map(existing.map((r) => [r.name, r.id]));
+  const missing = uniqueNames.filter((n) => !have.has(n));
+
+  if (missing.length > 0) {
+    const inserted = await db
+      .insert(schema.authors)
+      .values(missing.map((name) => ({ name, normName: normalizeName(name) })))
+      .onConflictDoNothing()
+      .returning({ id: schema.authors.id, name: schema.authors.name });
+
+    for (const r of inserted) have.set(r.name, r.id);
+
+    // In extremely rare races, some missing rows may exist now; fetch them
+    const stillMissing = missing.filter((n) => !have.has(n));
+    if (stillMissing.length > 0) {
+      const nowExisting = await db
+        .select({ id: schema.authors.id, name: schema.authors.name })
+        .from(schema.authors)
+        .where(inArray(schema.authors.name, stillMissing));
+      for (const r of nowExisting) have.set(r.name, r.id);
+    }
+  }
+
+  return have;
 }

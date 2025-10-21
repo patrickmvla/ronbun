@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // lib/types/compare.ts
 export type CompareItem = {
   arxivId: string;

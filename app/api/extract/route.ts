@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { groq } from "@ai-sdk/groq";
 import { generateObject } from "ai";

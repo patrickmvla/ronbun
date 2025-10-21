@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/compare/route.ts
 import { NextResponse } from "next/server";
 import { db, schema } from "@/lib/drizzle/db";
@@ -5,6 +6,8 @@ import { inArray, eq, desc, asc } from "drizzle-orm";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type ScoreComponents = { recency: number; code: number; stars: number; watchlist: number };
 
 type CompareItem = {
   arxivId: string;
@@ -31,9 +34,11 @@ type CompareItem = {
   claimedSota?: number;
 
   // Score + links
-  score?: { global: number; components?: any };
+  score?: { global: number; components?: ScoreComponents | null };
   links?: { abs: string | null; pwc: string | null; repo: string | null };
 };
+
+const MAX_IDS = 2;
 
 export async function GET(req: Request) {
   try {
@@ -44,34 +49,41 @@ export async function GET(req: Request) {
       return json({ error: "Missing ids (?ids=2501.10000,2501.10011)" }, 400);
     }
 
-    const requested = idsParam
+    // Normalize inputs: raw ID, ID with version, or abs/pdf URLs
+    const requestedRaw = idsParam
       .split(",")
-      .map((s) => stripVersion(s.trim()))
+      .map((s) => s.trim())
       .filter(Boolean)
-      .slice(0, 2);
+      .slice(0, MAX_IDS);
+
+    const requested = requestedRaw
+      .map((s) => normalizeArxivId(s))
+      .filter((v): v is string => Boolean(v));
 
     if (requested.length === 0) {
-      return json({ error: "Provide 1–2 arXiv IDs" }, 400);
+      return json({ error: "Provide 1–2 valid arXiv IDs" }, 400);
     }
+
+    // Query using unique IDs but keep requested order for payload
+    const uniqueIds = Array.from(new Set(requested));
 
     // 1) Fetch papers by arXiv base ID
     const papers = await db
       .select()
       .from(schema.papers)
-      .where(inArray(schema.papers.arxivIdBase, requested));
+      .where(inArray(schema.papers.arxivIdBase, uniqueIds));
 
     const byArxivId = new Map<string, (typeof papers)[number]>();
     for (const p of papers) byArxivId.set(p.arxivIdBase, p);
 
     const paperIds = papers.map((p) => p.id);
     if (paperIds.length === 0) {
-      // None found; return not-found stubs in requested order
       return json({
         items: requested.map((id) => ({ arxivId: id, found: false } as CompareItem)),
       });
     }
 
-    // 2) Authors for all (ordered)
+    // 2) Authors for all (ordered: paperId + position)
     const authorRows = await db
       .select({
         paperId: schema.paperAuthors.paperId,
@@ -81,7 +93,7 @@ export async function GET(req: Request) {
       .from(schema.paperAuthors)
       .innerJoin(schema.authors, eq(schema.paperAuthors.authorId, schema.authors.id))
       .where(inArray(schema.paperAuthors.paperId, paperIds))
-      .orderBy(asc(schema.paperAuthors.position));
+      .orderBy(asc(schema.paperAuthors.paperId), asc(schema.paperAuthors.position));
 
     const authorsByPaper = new Map<string, string[]>();
     for (const row of authorRows) {
@@ -165,7 +177,7 @@ export async function GET(req: Request) {
         score: score
           ? {
               global: Number(score.globalScore ?? 0),
-              components: score.components ?? null,
+              components: (score.components as ScoreComponents) ?? null,
             }
           : undefined,
 
@@ -201,15 +213,25 @@ function json(body: unknown, status = 200, headers?: Record<string, string>) {
   });
 }
 
+// Accept raw ID, ID with version, or abs/pdf URLs; return base ID (e.g., "2501.12345")
+function normalizeArxivId(input: string): string | null {
+  const s = String(input).trim();
+  if (!s) return null;
+  const urlMatch = s.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{5})(?:v\d+)?/i);
+  const rawMatch = s.match(/^(\d{4}\.\d{5})(?:v\d+)?$/);
+  const id = urlMatch?.[1] || rawMatch?.[1];
+  return id ? stripVersion(id) : null;
+}
+
 function stripVersion(arxivId: string) {
   return String(arxivId).replace(/v\d+$/i, "");
 }
 
 function toIso(d: unknown): string {
   try {
-    if (d instanceof Date) return isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
-    const x = new Date(String(d));
-    return isFinite(x.getTime()) ? x.toISOString() : new Date().toISOString();
+    // Prefer numeric time if Date-like
+    const ms = toMs(d);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : new Date().toISOString();
   } catch {
     return new Date().toISOString();
   }
@@ -219,22 +241,36 @@ function dedupe<T>(arr: T[]): T[] {
   return Array.from(new Set(arr));
 }
 
-// Pick the most recent row per key based on a timestamp column
-function pickLatestBy<T extends Record<string, any>>(
+// Safe timestamp extraction without instanceof on generic indexed values
+function toMs(v: unknown): number {
+  try {
+    if (v && typeof v === "object" && typeof (v as any).getTime === "function") {
+      const n = (v as any as Date).getTime();
+      if (Number.isFinite(n)) return n;
+    }
+    const n = new Date(String(v)).getTime();
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Pick the most recent row per key based on a timestamp column (no instanceof)
+function pickLatestBy<T extends Record<string, unknown>>(
   rows: T[],
   key: keyof T,
   ts: keyof T
 ): Map<string, T> {
   const map = new Map<string, T>();
   for (const r of rows) {
-    const id = String(r[key]);
+    const id = String(r[key] as any);
     const prev = map.get(id);
     if (!prev) {
       map.set(id, r);
       continue;
     }
-    const tPrev = prev[ts] instanceof Date ? prev[ts].getTime() : new Date(String(prev[ts])).getTime();
-    const tCur = r[ts] instanceof Date ? r[ts].getTime() : new Date(String(r[ts])).getTime();
+    const tPrev = toMs(prev[ts as keyof T]);
+    const tCur = toMs(r[ts as keyof T]);
     if (tCur >= tPrev) map.set(id, r);
   }
   return map;

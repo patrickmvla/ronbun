@@ -1,12 +1,13 @@
+// cspell:ignore watchlist
 import { getFilterDescription } from "@/lib/utils/feed-filters";
 
 interface FeedHeaderProps {
-  watchlist: string | null;
+  watchlist?: string | null; // allow undefined
   categoryCount: number;
 }
 
 export function FeedHeader({ watchlist, categoryCount }: FeedHeaderProps) {
-  const description = getFilterDescription(watchlist, categoryCount);
+  const description = getFilterDescription(watchlist ?? null, categoryCount);
 
   return (
     <div>

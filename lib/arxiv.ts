@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // lib/arxiv.ts
 // Lightweight arXiv client: query builder, polite fetch with UA/backoff, Atom XML → JSON
 import { XMLParser } from "fast-xml-parser";
@@ -19,6 +20,12 @@ export type ArxivSearchParams = {
   max?: number; // page size (max_results)
   sortBy?: "relevance" | "lastUpdatedDate" | "submittedDate";
   sortOrder?: "ascending" | "descending";
+};
+
+export type ArxivSearchMeta = {
+  totalResults: number;
+  startIndex: number;
+  itemsPerPage: number;
 };
 
 const ARXIV_ENDPOINT = "https://export.arxiv.org/api/query";
@@ -51,15 +58,20 @@ export function buildArxivUrl(params: ArxivSearchParams): string {
 }
 
 /**
- * Perform a polite fetch with retries/backoff and a proper User-Agent.
+ * Perform a polite fetch with retries/backoff, timeout, and proper User-Agent.
  */
 export async function politeFetch(
   url: string,
-  init: RequestInit & { retries?: number; retryDelayMs?: number } = {}
+  init: RequestInit & {
+    retries?: number;
+    retryDelayMs?: number;
+    timeoutMs?: number;
+  } = {}
 ): Promise<Response> {
   const {
     retries = 3,
     retryDelayMs = 600,
+    timeoutMs = 15000,
     headers,
     ...rest
   } = init;
@@ -74,14 +86,20 @@ export async function politeFetch(
 
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+
     try {
-      const res = await fetch(url, { ...rest, headers: finalHeaders });
+      const res = await fetch(url, { ...rest, headers: finalHeaders, signal: ac.signal });
+      clearTimeout(t);
+
       if (res.ok) return res;
 
       // Retry on 429/5xx
       if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+        const ra = res.headers.get("Retry-After");
         const delay =
-          parseInt(res.headers.get("Retry-After") || "", 10) * 1000 ||
+          parseRetryAfter(ra) ??
           retryDelayMs * Math.pow(2, attempt);
         await sleep(delay + jitter(150));
         continue;
@@ -90,6 +108,7 @@ export async function politeFetch(
       // Non-retryable
       return res;
     } catch (err) {
+      clearTimeout(t);
       lastErr = err;
       if (attempt === retries) break;
       await sleep(retryDelayMs * Math.pow(2, attempt) + jitter(150));
@@ -109,13 +128,29 @@ export async function searchArxiv(params: ArxivSearchParams): Promise<ArxivItem[
     throw new Error(msg || `arXiv error ${res.status}`);
   }
   const xml = await res.text();
+  return parseArxivAtom(xml).items;
+}
+
+/**
+ * Variant that also returns pagination meta (does not change the existing searchArxiv API).
+ */
+export async function searchArxivWithMeta(
+  params: ArxivSearchParams
+): Promise<{ items: ArxivItem[]; meta: ArxivSearchMeta }> {
+  const url = buildArxivUrl(params);
+  const res = await politeFetch(url, { method: "GET" });
+  if (!res.ok) {
+    const msg = await safeText(res);
+    throw new Error(msg || `arXiv error ${res.status}`);
+  }
+  const xml = await res.text();
   return parseArxivAtom(xml);
 }
 
 /**
- * Parse arXiv Atom XML to ArxivItem[]
+ * Parse arXiv Atom XML to ArxivItem[] with meta
  */
-export function parseArxivAtom(xml: string): ArxivItem[] {
+export function parseArxivAtom(xml: string): { items: ArxivItem[]; meta: ArxivSearchMeta } {
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
@@ -126,10 +161,14 @@ export function parseArxivAtom(xml: string): ArxivItem[] {
 
   const root = parser.parse(xml);
   const feed = root?.feed;
-  if (!feed) return [];
+  if (!feed) return { items: [], meta: { totalResults: 0, startIndex: 0, itemsPerPage: 0 } };
+
+  const totalResults = toInt(feed?.["opensearch:totalResults"]);
+  const startIndex = toInt(feed?.["opensearch:startIndex"]);
+  const itemsPerPage = toInt(feed?.["opensearch:itemsPerPage"]);
 
   const entries = toArray(feed.entry);
-  return entries.map((entry: any) => {
+  const items = entries.map((entry: any) => {
     const idHref = String(entry?.id ?? "");
     const arxivId = extractArxivId(idHref) || ""; // may include version
     const title = normalizeText(String(entry?.title ?? ""));
@@ -173,6 +212,15 @@ export function parseArxivAtom(xml: string): ArxivItem[] {
       pdfUrl: pdfLink || null,
     } as ArxivItem;
   });
+
+  return {
+    items,
+    meta: {
+      totalResults,
+      startIndex,
+      itemsPerPage,
+    },
+  };
 }
 
 /* ========== Helpers ========== */
@@ -186,10 +234,13 @@ function normalizeText(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-function extractArxivId(idHref: string): string | null {
-  // Typical id: https://arxiv.org/abs/2501.12345v2
-  const m = idHref.match(/arxiv\.org\/abs\/([\w.\-]+)$/i);
-  return m ? m[1] : null;
+function extractArxivId(href: string): string | null {
+  // Matches: https://arxiv.org/abs/2501.12345v2 or /pdf/2501.12345v1.pdf
+  const m = String(href).match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{5})(?:v(\d+))?/i);
+  if (!m) return null;
+  const base = m[1];
+  const v = m[2] ? `v${m[2]}` : "";
+  return `${base}${v}`;
 }
 
 export function stripVersion(arxivId: string): string {
@@ -199,10 +250,24 @@ export function stripVersion(arxivId: string): string {
 function toIso(v: unknown): string {
   try {
     const d = v ? new Date(String(v)) : new Date();
-    return isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
+    return Number.isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
   } catch {
     return new Date().toISOString();
   }
+}
+
+function toInt(v: unknown): number {
+  const n = Number(String(v ?? "").trim());
+  return Number.isFinite(n) ? n : 0;
+}
+
+function parseRetryAfter(v: string | null): number | null {
+  if (!v) return null;
+  const sec = Number(v);
+  if (Number.isFinite(sec)) return Math.max(0, sec * 1000);
+  // HTTP-date form
+  const ms = new Date(v).getTime();
+  return Number.isFinite(ms) ? Math.max(0, ms - Date.now()) : null;
 }
 
 function sleep(ms: number) {

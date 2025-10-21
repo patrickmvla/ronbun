@@ -25,13 +25,12 @@ declare global {
 }
 
 function createClient() {
-  // postgres-js options tuned for serverless
-  // - ssl: 'require' for Supabase
-  // - max: 1 to keep connection usage minimal
-  // - prepare: false to avoid prepared statements caching across lambdas
+  // postgres-js options tuned for server/serverless
+  // Increase max to speed up ingest; keep modest to avoid exhausting Supabase limits.
+  const max = Number(process.env.PG_MAX || 3); // default 3; override via env if needed
   return postgres(connectionString, {
     ssl: "require",
-    max: 1,
+    max,
     prepare: false,
     idle_timeout: 20,
     connect_timeout: 10,

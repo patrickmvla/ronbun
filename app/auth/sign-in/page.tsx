@@ -1,8 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/auth/sign-in/page.tsx
 "use client";
 
 import * as React from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Mail, Github, ArrowLeft, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -16,17 +18,18 @@ type Step = "form" | "sent";
 
 export default function SignInPage() {
   const supabase = React.useMemo<SupabaseClient | null>(() => createSupabaseClient(), []);
+  const search = useSearchParams();
+  const next = search?.get("next") || "/feed";
+
   const [email, setEmail] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [step, setStep] = React.useState<Step>("form");
   const [error, setError] = React.useState<string>("");
 
-  const origin =
-    typeof window !== "undefined" && window.location?.origin
-      ? window.location.origin
-      : process.env.APP_URL || "http://localhost:3000";
-
-  const emailRedirectTo = `${origin}/feed`;
+  const getCallbackUrl = React.useCallback(() => {
+    const origin = typeof window !== "undefined" ? window.location.origin : process.env.APP_URL || "http://localhost:3000";
+    return `${origin}/auth/callback?next=${encodeURIComponent(next)}`;
+  }, [next]);
 
   const onMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,15 +38,16 @@ export default function SignInPage() {
       setError("Auth is not configured.");
       return;
     }
-    if (!email.trim()) {
+    const emailTrim = email.trim();
+    if (!emailTrim) {
       setError("Please enter a valid email.");
       return;
     }
     try {
       setLoading(true);
       const { error } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
-        options: { emailRedirectTo },
+        email: emailTrim,
+        options: { emailRedirectTo: getCallbackUrl() },
       });
       if (error) throw error;
       setStep("sent");
@@ -62,12 +66,14 @@ export default function SignInPage() {
     }
     try {
       setLoading(true);
-      const { error } = await supabase.auth.signInWithOAuth({
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider,
-        options: { redirectTo: emailRedirectTo },
+        options: { redirectTo: getCallbackUrl() },
       });
       if (error) throw error;
-      // Supabase will redirect
+      if (data?.url) {
+        window.location.href = data.url;
+      }
     } catch (err: any) {
       setError(err?.message || "OAuth sign-in failed.");
       setLoading(false);
@@ -193,7 +199,7 @@ export default function SignInPage() {
       </Card>
 
       <div className="mt-4 text-center text-xs text-muted-foreground">
-        <Link href="/feed" className="text-primary hover:underline">
+        <Link href={next} className="text-primary hover:underline">
           Continue without an account
         </Link>
       </div>

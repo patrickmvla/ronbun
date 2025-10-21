@@ -2,12 +2,12 @@
 // Postgres (Supabase) schema for Ronbun using Drizzle ORM.
 // Includes enums, tables, indexes, and minimal relations.
 // Notes:
-// - auth.users is referenced via pgSchema('auth') so RLS can be enabled on app tables.
+// - We do NOT create or reference auth.users via FK to avoid cross-schema DDL/permissions.
+//   Use UUIDs + RLS (user_id = auth.uid()) instead.
 // - Numeric defaults in Drizzle should be strings (e.g., .default('0')).
 
 import {
   pgTable,
-  pgSchema,
   uuid,
   text,
   varchar,
@@ -23,13 +23,6 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
-/* ================= External auth schema ================= */
-
-export const auth = pgSchema("auth");
-export const authUsers = auth.table("users", {
-  id: uuid("id").primaryKey(),
-});
-
 /* ================= Enums ================= */
 
 export const watchlistType = pgEnum("watchlist_type", ["keyword", "author", "benchmark", "institution"]);
@@ -42,9 +35,8 @@ export const digestStatus = pgEnum("digest_status", ["scheduled", "sent", "faile
 export const profiles = pgTable(
   "profiles",
   {
-    id: uuid("id")
-      .primaryKey()
-      .references(() => authUsers.id, { onDelete: "cascade" }),
+    // Primary key equals the user's auth.uid(), but no FK
+    id: uuid("id").primaryKey(),
     displayName: text("display_name"),
     avatarUrl: text("avatar_url"),
     preferences: jsonb("preferences").$type<{
@@ -340,9 +332,8 @@ export const watchlists = pgTable(
   "watchlists",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => authUsers.id, { onDelete: "cascade" }),
+    // No FK to auth.users; use RLS auth.uid()
+    userId: uuid("user_id").notNull(),
     type: watchlistType("type").notNull(),
     name: text("name").notNull(),
     terms: jsonb("terms").$type<string[]>().default([]),
@@ -359,9 +350,8 @@ export const userSaves = pgTable(
   "user_saves",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => authUsers.id, { onDelete: "cascade" }),
+    // No FK to auth.users; use RLS auth.uid()
+    userId: uuid("user_id").notNull(),
     paperId: uuid("paper_id")
       .references(() => papers.id, { onDelete: "cascade" })
       .notNull(),
@@ -374,15 +364,12 @@ export const userSaves = pgTable(
   })
 );
 
-/* ================= Digests & ingest runs ================= */
-
 export const digests = pgTable(
   "digests",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => authUsers.id, { onDelete: "cascade" }),
+    // No FK to auth.users; use RLS auth.uid()
+    userId: uuid("user_id").notNull(),
     scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
     items: jsonb("items").$type<Array<{ paperId: string; reason: string }>>().default([]),
     status: digestStatus("status").default("scheduled"),
@@ -394,6 +381,8 @@ export const digests = pgTable(
     idxStatus: index("idx_digests_status").on(t.status),
   })
 );
+
+/* ================= Ingest runs ================= */
 
 export const ingestRuns = pgTable(
   "ingest_runs",

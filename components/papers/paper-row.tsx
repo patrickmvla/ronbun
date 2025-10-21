@@ -5,8 +5,16 @@ import * as React from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ExternalLink, FileText, Github } from "lucide-react";
+import { ExternalLink, FileText, Github, HelpCircle } from "lucide-react";
 import { PaperBadges, UIPaper } from "@/components/papers/paper-card";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 
 type PaperRowProps = {
   paper: UIPaper;
@@ -33,7 +41,11 @@ export function PaperRow({
   const terms = normalizeTerms(highlight);
 
   const titleNode = terms.length ? highlightText(paper.title, terms) : paper.title;
-  const summaryNode = terms.length ? highlightText(paper.summary, terms) : paper.summary;
+
+  const hasSummary = Boolean(paper.summary && paper.summary.trim().length > 0);
+  const summaryNode = hasSummary && terms.length
+    ? highlightText(paper.summary!, terms)
+    : paper.summary;
 
   return (
     <article
@@ -76,18 +88,50 @@ export function PaperRow({
           {/* Inline badges */}
           <PaperBadges paper={paper} className="mt-2" />
 
-          {/* Abstract */}
+          {/* Abstract or Empty fallback */}
           <div className={compact ? "mt-1" : "mt-2"}>
-            <p className={`text-sm text-muted-foreground ${!open ? "max-h-12 overflow-hidden" : ""}`}>
-              {summaryNode}
-            </p>
-            <button
-              type="button"
-              className="mt-1 inline-flex h-7 items-center rounded px-1.5 text-xs text-primary hover:underline"
-              onClick={() => setOpen((v) => !v)}
-            >
-              {open ? "Show less" : "Quick look"}
-            </button>
+            {hasSummary ? (
+              <>
+                <p className={`text-sm text-muted-foreground ${!open ? "max-h-12 overflow-hidden" : ""}`}>
+                  {summaryNode}
+                </p>
+                <button
+                  type="button"
+                  className="mt-1 inline-flex h-7 items-center rounded px-1.5 text-xs text-primary hover:underline"
+                  onClick={() => setOpen((v) => !v)}
+                >
+                  {open ? "Show less" : "Quick look"}
+                </button>
+              </>
+            ) : (
+              <Empty className="border">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <HelpCircle className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
+                  </EmptyMedia>
+                  <EmptyTitle>No abstract available</EmptyTitle>
+                  <EmptyDescription>
+                    This arXiv entry doesn’t include a summary. You can open the paper or PDF directly.
+                  </EmptyDescription>
+                </EmptyHeader>
+                <EmptyContent>
+                  <div className="flex gap-2">
+                    <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
+                      <Link href={absUrl} target="_blank" rel="noreferrer">
+                        arXiv
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                    <Button asChild variant="outline" size="sm" className="h-8 gap-1.5">
+                      <Link href={pdfUrl} target="_blank" rel="noreferrer">
+                        PDF
+                        <FileText className="h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                  </div>
+                </EmptyContent>
+              </Empty>
+            )}
           </div>
 
           {/* Mobile actions */}
@@ -207,13 +251,14 @@ function normalizeTerms(input?: string | string[]) {
   return Array.from(new Set(tokens.map((t) => t.toLowerCase())));
 }
 
+// Fixed: robust regex escaping for highlight
 function escapeRegex(str: string) {
-  return str.replace(/[-\/\\^$*+?.()|[```{}]/g, "\\$&");
+  return str.replace(/[.*+?^${}()|[```\\\/\-]/g, "\\$&");
 }
 
 function highlightText(text: string, terms: string[]) {
   if (!terms.length) return text;
-  
+
   const escaped = terms.map(escapeRegex);
   const re = new RegExp(`(${escaped.join("|")})`, "gi");
   const parts = text.split(re);

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // hooks/useReviewer.ts
 "use client";
 
@@ -159,14 +160,23 @@ export function useReviewer({
 
 function normalizeReview(input?: Partial<ReviewJSON> | any): ReviewJSON {
   const toArr = (v: unknown): string[] =>
-    Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim()) : [];
+    Array.isArray(v)
+      ? v
+          .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+          .map((s) => s.trim())
+      : [];
+
   const toInt = (v: unknown): number | null => {
     if (v === null || v === undefined) return null;
     const n = Number(v);
     return Number.isFinite(n) ? clamp(Math.round(n), 0, 3) : null;
   };
-  const toStr = (v: unknown): string | null =>
-    typeof v === "string" && v.trim() ? v : null;
+
+  const toStr = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    return t.length > 0 ? t : null;
+  };
 
   // Accept both snake_case and camelCase to be resilient
   return {

@@ -1,7 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,42 +14,72 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Github } from "lucide-react";
+import { Github, Loader2, Mail } from "lucide-react";
 
 export default function SignInCard() {
-  const supabase = createClient();
+  const supabase = useMemo(() => createSupabaseClient(), []);
+  const search = useSearchParams();
+  const next = search?.get("next") || "/feed";
+
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const getCallbackUrl = () => {
+    // Runs in browser (client component), safe to read window.location
+    const origin = window.location?.origin;
+    return `${origin}/auth/callback?next=${encodeURIComponent(next)}`;
+  };
 
   const signInWithGithub = async () => {
+    setErr(null);
+    if (!supabase) {
+      setErr("Auth is not configured.");
+      return;
+    }
     setLoading(true);
     try {
-      await supabase.auth.signInWithOAuth({
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "github",
-        options: { redirectTo: `${location.origin}/auth/callback` },
+        options: { redirectTo: getCallbackUrl() },
       });
-    } finally {
+      if (error) throw error;
+
+      // Some environments require manual redirect
+      if (data?.url) {
+        window.location.href = data.url;
+      }
+      // Otherwise, the SDK may auto-redirect; keep spinner until navigation
+    } catch (e: any) {
+      setErr(e?.message || "OAuth sign-in failed.");
       setLoading(false);
     }
   };
 
   const sendMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) return;
+    setErr(null);
+    if (!supabase) {
+      setErr("Auth is not configured.");
+      return;
+    }
+    const emailTrim = email.trim();
+    if (!emailTrim) {
+      setErr("Please enter a valid email.");
+      return;
+    }
+
     setLoading(true);
     try {
       const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: `${location.origin}/auth/callback` },
+        email: emailTrim,
+        options: { emailRedirectTo: getCallbackUrl() },
       });
       if (error) throw error;
       setSent(true);
-    } catch (err) {
-      console.error(err);
-      alert(
-        "Failed to send magic link. Check the email address and try again."
-      );
+    } catch (e: any) {
+      setErr(e?.message || "Failed to send magic link. Check the email and try again.");
     } finally {
       setLoading(false);
     }
@@ -65,10 +97,10 @@ export default function SignInCard() {
         <CardContent className="space-y-4">
           <Button
             onClick={signInWithGithub}
-            disabled={loading}
+            disabled={loading || !supabase}
             className="w-full gap-2 bg-[color:var(--primary)] text-[color:var(--primary-foreground)] hover:bg-[color:var(--orange-4)]"
           >
-            <Github className="h-4 w-4" />
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
             Continue with GitHub
           </Button>
 
@@ -83,7 +115,7 @@ export default function SignInCard() {
 
           {sent ? (
             <p className="text-sm text-muted-foreground">
-              Check your email for a sign-in link.
+              Magic link sent to <span className="font-medium">{email}</span>. Check your email.
             </p>
           ) : (
             <form onSubmit={sendMagicLink} className="space-y-3">
@@ -96,14 +128,26 @@ export default function SignInCard() {
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
+                  disabled={loading || !supabase}
                 />
               </div>
+              {err && <p className="text-xs text-destructive">{err}</p>}
               <Button
                 type="submit"
-                disabled={loading || !email}
+                disabled={loading || !email || !supabase}
                 className="w-full bg-secondary text-secondary-foreground hover:bg-[color:var(--accent)]"
               >
-                Send magic link
+                {loading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Sending…
+                  </>
+                ) : (
+                  <>
+                    <Mail className="mr-2 h-4 w-4" />
+                    Send magic link
+                  </>
+                )}
               </Button>
             </form>
           )}

@@ -1,16 +1,17 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // lib/auth.ts
-// Supabase Auth helpers for server components and route handlers.
-// - getAuth(): fetch session/user with cookies (Next 14/15 compatible)
-// - requireAuth(): same but throws if unauthenticated
-// - getProfile()/upsertProfile(): minimal profile helpers (RLS-friendly)
-// - verifyCronSecret()/assertCronSecret(): protect cron endpoints with CRON_SECRET
-//
-// Notes:
-// - These helpers rely on lib/supabase/server.ts (createClient) which builds a server-side client from cookies.
-// - Works only in Node runtime (not Edge), since Supabase SSR client uses cookies().
+import {
+  createClient as createSupabaseJsClient,
+  type SupabaseClient,
+  type Session,
+  type User,
+} from "@supabase/supabase-js";
+import { createClient as createServerSupabase } from "@/lib/supabase/server";
+import { createServerClient, type CookieMethodsServer } from "@supabase/ssr";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
-import type { SupabaseClient, Session, User } from "@supabase/supabase-js";
-import { createClient } from "@/lib/supabase/server";
+/* ================= Types ================= */
 
 export type AuthResult = {
   supabase: SupabaseClient | null;
@@ -18,36 +19,117 @@ export type AuthResult = {
   user: User | null;
 };
 
-/**
- * Return Supabase client, session, and user.
- * If Supabase is not configured (missing env), supabase = null and session/user = null.
- */
+export type RouteAuthResult = AuthResult & {
+  response: NextResponse;
+};
+
+/* ================= Utils ================= */
+
+function isHttpUrl(url?: string | null | undefined) {
+  if (!url) return false;
+  try {
+    const u = new URL(url.trim());
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
+/* ================= Server components ================= */
+
 export async function getAuth(): Promise<AuthResult> {
-  const supabase = await createClient();
-  if (!supabase) {
-    return { supabase: null, session: null, user: null };
-  }
+  const supabase = await createServerSupabase();
+  if (!supabase) return { supabase: null, session: null, user: null };
+
   const { data, error } = await supabase.auth.getSession();
-  if (error) {
-    return { supabase, session: null, user: null };
-  }
+  if (error) return { supabase, session: null, user: null };
+
   const session = data.session ?? null;
   const user = session?.user ?? null;
   return { supabase, session, user };
 }
 
-/**
- * Require an authenticated user. Throws an Error(401) if not authenticated.
- * Use inside server components or route handlers.
- */
-export async function requireAuth(): Promise<{ supabase: SupabaseClient; session: Session; user: User }> {
+export async function requireAuth(): Promise<{
+  supabase: SupabaseClient;
+  session: Session;
+  user: User;
+}> {
   const { supabase, session, user } = await getAuth();
-  if (!supabase || !session || !user) {
-    const err: any = new Error("Unauthorized");
-    err.status = 401;
-    throw err;
-  }
+  if (!supabase || !session || !user) throw new HttpError(401, "Unauthorized");
   return { supabase, session, user };
+}
+
+/* ================= Route handlers (cookie-persistent) ================= */
+
+export async function getAuthRoute(req: NextRequest): Promise<RouteAuthResult> {
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const rawKey =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  const response = NextResponse.next();
+
+  if (!isHttpUrl(rawUrl) || !rawKey) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        `[auth:getAuthRoute] Missing/invalid env. URL=${rawUrl ? `"${rawUrl}"` : "unset"} KEY=${rawKey ? "set" : "unset"}`
+      );
+    }
+    return { supabase: null, session: null, user: null, response };
+  }
+
+  // Narrow after guard so TS stops complaining
+  const url: string = rawUrl;
+  const key: string = rawKey;
+
+  const cookieAdapter: CookieMethodsServer = {
+    getAll() {
+      return req.cookies.getAll();
+    },
+    setAll(cookiesToSet) {
+      cookiesToSet.forEach(({ name, value, options }) => {
+        response.cookies.set(name, value, options);
+      });
+    },
+  };
+
+  const supabase = createServerClient(url, key, { cookies: cookieAdapter });
+
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return { supabase, session: null, user: null, response };
+
+  const session = data.session ?? null;
+  const user = session?.user ?? null;
+
+  return { supabase, session, user, response };
+}
+
+export async function requireAuthRoute(
+  req: NextRequest
+): Promise<{
+  supabase: SupabaseClient;
+  session: Session;
+  user: User;
+  response: NextResponse;
+}> {
+  const { supabase, session, user, response } = await getAuthRoute(req);
+  if (!supabase || !session || !user) throw new HttpError(401, "Unauthorized");
+  return { supabase, session, user, response };
+}
+
+export function attachAuthCookies(from: NextResponse, to: NextResponse): NextResponse {
+  for (const c of from.cookies.getAll()) {
+    const { name, value, ...opts } = c as any;
+    to.cookies.set(name, value, opts);
+  }
+  return to;
 }
 
 /* ================= Profiles (minimal) ================= */
@@ -59,18 +141,17 @@ export type Profile = {
   preferences?: Record<string, unknown> | null;
 };
 
-/**
- * Fetch the authenticated user's profile (RLS: user can read own row).
- */
-export async function getProfile(supabase: SupabaseClient, userId: string): Promise<Profile | null> {
+export async function getProfile(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<Profile | null> {
   const { data, error } = await supabase
     .from("profiles")
     .select("id, display_name, avatar_url, preferences")
     .eq("id", userId)
     .maybeSingle();
 
-  if (error) return null;
-  if (!data) return null;
+  if (error || !data) return null;
 
   return {
     id: data.id,
@@ -80,15 +161,16 @@ export async function getProfile(supabase: SupabaseClient, userId: string): Prom
   };
 }
 
-/**
- * Upsert the authenticated user's profile. RLS should enforce id = auth.uid().
- */
 export async function upsertProfile(
   supabase: SupabaseClient,
   userId: string,
-  values: Partial<{ displayName: string | null; avatarUrl: string | null; preferences: Record<string, unknown> | null }>
+  values: Partial<{
+    displayName: string | null;
+    avatarUrl: string | null;
+    preferences: Record<string, unknown> | null;
+  }>
 ): Promise<Profile | null> {
-  const payload: any = {
+  const payload: Record<string, unknown> = {
     id: userId,
     ...(values.displayName !== undefined ? { display_name: values.displayName } : {}),
     ...(values.avatarUrl !== undefined ? { avatar_url: values.avatarUrl } : {}),
@@ -111,20 +193,35 @@ export async function upsertProfile(
   };
 }
 
+/* ================= Service-role (cron/jobs) ================= */
+
+export function createServiceClient(): SupabaseClient {
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!isHttpUrl(rawUrl) || !rawKey) {
+    throw new Error(
+      "Service client misconfigured: check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+    );
+  }
+
+  // Narrow after guard
+  const url: string = rawUrl;
+  const key: string = rawKey;
+
+  return createSupabaseJsClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+  });
+}
+
 /* ================= Cron protection ================= */
 
 const CRON_SECRET = process.env.CRON_SECRET || "";
 
-/**
- * Return true if request contains a valid cron secret.
- * Accepts either:
- * - Authorization: Bearer <CRON_SECRET>
- * - x-cron-secret: <CRON_SECRET>
- */
 export function verifyCronSecret(req: Request): boolean {
   if (!CRON_SECRET) return false;
   const bearer = req.headers.get("authorization") || req.headers.get("Authorization");
-  if (bearer && /^Bearer\s+/.test(bearer)) {
+  if (bearer && /^Bearer\s+/i.test(bearer)) {
     const token = bearer.replace(/^Bearer\s+/i, "").trim();
     if (safeEq(token, CRON_SECRET)) return true;
   }
@@ -133,29 +230,21 @@ export function verifyCronSecret(req: Request): boolean {
   return false;
 }
 
-/**
- * Throw Response(401) if cron secret missing/invalid.
- */
 export function assertCronSecret(req: Request): void {
   if (!verifyCronSecret(req)) {
-    const err: any = new Error("Unauthorized (cron)");
-    err.status = 401;
-    throw err;
+    throw new HttpError(401, "Unauthorized (cron)");
   }
 }
 
 /* ================= Small helpers ================= */
 
 function safeEq(a: string, b: string): boolean {
-  // Constant-time-ish compare for short secrets (not cryptographically strong, but better than naive)
   if (a.length !== b.length) return false;
   let out = 0;
-  for (let i = 0; i < a.length; i++) {
-    out |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return out === 0;
 }
 
 export function stripVersion(arxivId: string) {
-  return arxivId.replace(/v\d+$/i, "");
+  return arxivId.trim().replace(/^arxiv:/i, "").replace(/v\d+$/i, "");
 }

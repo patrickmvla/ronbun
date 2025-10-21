@@ -1,5 +1,5 @@
 // lib/watchlists-utils.ts
-import type { WatchlistType } from "./types/watchlists";
+import type { WatchlistType } from "@/types/watchlists";
 
 export const LS_KEY = "ronbun:watchlists";
 

@@ -1,8 +1,15 @@
-import { ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2, CircleAlert, SearchX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PaperRow, PaperRowSkeleton } from "@/components/papers/paper-row";
-import { EmptyState } from "./empty-state";
 import type { PaperListItem } from "@/hooks/useInfinitePapers";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 
 interface FeedContentProps {
   papers: PaperListItem[];
@@ -13,7 +20,7 @@ interface FeedContentProps {
   onLoadMore: () => void;
   onRetry: () => void;
   onReset: () => void;
-  sentinelRef: React.RefObject<HTMLDivElement>; // ✅ Remove null
+  sentinelRef: React.Ref<HTMLDivElement>;
 }
 
 export function FeedContent({
@@ -27,7 +34,6 @@ export function FeedContent({
   onReset,
   sentinelRef,
 }: FeedContentProps) {
-  // Initial loading state
   if (isLoading) {
     return (
       <div className="grid gap-3">
@@ -38,40 +44,48 @@ export function FeedContent({
     );
   }
 
-  // Error state
   if (error) {
+    const errMsg = error instanceof Error ? error.message : "Please try again shortly.";
     return (
-      <EmptyState
-        title="Can't load papers"
-        description={error.message || "Please try again shortly."}
-        action={
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <CircleAlert className="h-10 w-10 text-muted-foreground" aria-hidden="true" />
+          </EmptyMedia>
+          <EmptyTitle>Can’t load papers</EmptyTitle>
+          <EmptyDescription>{errMsg}</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
           <Button variant="secondary" onClick={onRetry}>
             Retry
           </Button>
-        }
-      />
+        </EmptyContent>
+      </Empty>
     );
   }
 
-  // Empty state
   if (papers.length === 0) {
     return (
-      <EmptyState
-        title="No papers found"
-        description="Try different categories or a broader time range."
-        action={
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <SearchX className="h-10 w-10 text-muted-foreground" aria-hidden="true" />
+          </EmptyMedia>
+          <EmptyTitle>No papers found</EmptyTitle>
+          <EmptyDescription>Try different categories or a broader time range.</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
           <Button variant="secondary" onClick={onReset}>
             Reset filters
           </Button>
-        }
-      />
+        </EmptyContent>
+      </Empty>
     );
   }
 
-  // Papers list
   return (
     <>
-      <div className="grid gap-3">
+      <div className="grid gap-3" aria-busy={isLoadingMore || undefined}>
         {papers.map((paper) => (
           <PaperRow
             key={paper.arxivId}
@@ -83,17 +97,17 @@ export function FeedContent({
               categories: paper.categories,
               published: paper.published,
               updated: paper.updated,
-              pdfUrl: paper.pdfUrl,
+              pdfUrl: paper.pdfUrl ?? undefined,
+              // pass enrichment so badges/buttons render
+              codeUrls: paper.codeUrls ?? [],
             }}
           />
         ))}
 
-        {/* Intersection observer sentinel */}
-        <div ref={sentinelRef} aria-hidden="true" />
+        <div ref={sentinelRef} aria-hidden="true" className="h-1" />
       </div>
 
-      {/* Load more footer */}
-      <div className="flex items-center justify-center py-6">
+      <div className="flex items-center justify-center py-6" aria-live="polite">
         {isLoadingMore ? (
           <Button variant="ghost" disabled className="gap-2">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -105,9 +119,7 @@ export function FeedContent({
             <ArrowRight className="h-4 w-4" aria-hidden="true" />
           </Button>
         ) : papers.length > 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Youve reached the end
-          </p>
+          <p className="text-sm text-muted-foreground">You’ve reached the end</p>
         ) : null}
       </div>
     </>

@@ -53,7 +53,7 @@ export type ScoreOptions = {
 };
 
 export const DEFAULT_SCORING: Required<ScoreOptions> = {
-  now: new Date(),
+  now: new Date(), // note: computePaperScore overrides this at call-time
   halfLifeDays: 5,
   starsCap: 1500,
   weights: {
@@ -78,7 +78,13 @@ export function computePaperScore(
   watchlists: WatchlistInput[] = [],
   opts?: ScoreOptions
 ): ScoreResult {
-  const cfg = { ...DEFAULT_SCORING, ...opts, weights: { ...DEFAULT_SCORING.weights, ...(opts?.weights || {}) } };
+  // Merge options, but compute "now" fresh at call-time to avoid stale defaults.
+  const cfg = {
+    ...DEFAULT_SCORING,
+    ...opts,
+    now: opts?.now ?? new Date(),
+    weights: { ...DEFAULT_SCORING.weights, ...(opts?.weights || {}) },
+  };
 
   const r = recencyScore(paper.publishedAt, cfg.halfLifeDays, cfg.now);
   const c = codeScore(paper.codeUrls, paper.hasWeights, cfg.codeBase, cfg.hasWeightsBonus);
@@ -109,7 +115,7 @@ export function computePaperScore(
 export function recencyScore(
   publishedAt: string | Date | null | undefined,
   halfLifeDays = DEFAULT_SCORING.halfLifeDays,
-  now: Date = DEFAULT_SCORING.now
+  now: Date = new Date()
 ): number {
   const t = toDate(publishedAt);
   if (!t) return 0;
@@ -209,10 +215,15 @@ export function watchlistScore(
 
 function includesToken(hay: string, needle: string): boolean {
   if (!hay || !needle) return false;
-  // Escape regex special chars in needle
-  const escaped = needle.replace(/[.*+?^${}()|[```\```/g, "\\$&");
+  const escaped = escapeRegex(needle);
+  // token-ish match: (^|non-word)term(?=non-word|$)
   const re = new RegExp(`(^|\\W)${escaped}(?=\\W|$)`, "i");
   return re.test(hay);
+}
+
+function escapeRegex(str: string): string {
+  // Escapes special regex characters
+  return str.replace(/[-\/\\^$*+?.()|[```{}]/g, '\\$&');
 }
 
 function normalizeName(s: string): string {

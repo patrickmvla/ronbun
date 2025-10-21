@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // components/compare/paper-column.tsx
 import * as React from "react";
 import Link from "next/link";

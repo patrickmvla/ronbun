@@ -2,6 +2,14 @@ import type { ViewTab } from "@/types/feed";
 import type { PaperListItem } from "@/hooks/useInfinitePapers";
 import { DEFAULT_CATEGORIES } from "@/config/feed";
 
+/** Allowed category type derived from config */
+type AllowedCategory = (typeof DEFAULT_CATEGORIES)[number];
+
+/** Type guard for categories */
+function isAllowedCategory(cat: string): cat is AllowedCategory {
+  return (DEFAULT_CATEGORIES as readonly string[]).includes(cat);
+}
+
 /**
  * Parse and validate categories from URL parameter
  */
@@ -15,39 +23,38 @@ export function parseCategoriesFromURL(
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const valid = parts.filter((cat) =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    DEFAULT_CATEGORIES.includes(cat as any)
-  );
-
+  const valid = parts.filter(isAllowedCategory);
   return valid.length > 0 ? valid : null;
 }
 
 /**
  * Apply time-based filter to papers based on view
+ * - today: from local start-of-day to now
+ * - week: last 7 days rolling window
+ * - for-you: no time filter (ranking handled elsewhere)
  */
 export function applyViewFilter(
   items: PaperListItem[],
   view: ViewTab,
   referenceDate: Date = new Date()
 ): PaperListItem[] {
-  // "For You" shows all items (personalized ranking handled elsewhere)
-  if (view === "for-you") {
-    return items;
+  if (view === "for-you") return items;
+
+  const nowMs = referenceDate.getTime();
+  let cutoffMs: number;
+
+  if (view === "today") {
+    const startOfDay = new Date(referenceDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    cutoffMs = startOfDay.getTime();
+  } else {
+    // week
+    cutoffMs = nowMs - 7 * 24 * 60 * 60 * 1000;
   }
 
-  const now = referenceDate.getTime();
-
-  const timeRanges: Record<Exclude<ViewTab, "for-you">, number> = {
-    today: 24 * 60 * 60 * 1000, // 24 hours
-    week: 7 * 24 * 60 * 60 * 1000, // 7 days
-  };
-
-  const cutoffTime = now - timeRanges[view];
-
   return items.filter((paper) => {
-    const publishedTime = new Date(paper.published).getTime();
-    return publishedTime >= cutoffTime;
+    const publishedMs = Date.parse(paper.published);
+    return Number.isFinite(publishedMs) && publishedMs >= cutoffMs;
   });
 }
 
@@ -58,10 +65,7 @@ export function getFilterDescription(
   watchlist: string | null,
   categoryCount: number
 ): string {
-  if (watchlist) {
-    return `Watchlist: ${watchlist}`;
-  }
-
+  if (watchlist) return `Watchlist: ${watchlist}`;
   return `Latest papers from ${categoryCount} ${
     categoryCount === 1 ? "category" : "categories"
   }`;
@@ -71,11 +75,10 @@ export function getFilterDescription(
  * Validate view parameter from URL
  */
 export function parseViewFromURL(viewParam: string | null): ViewTab {
-  const validViews: ViewTab[] = ["today", "week", "for-you"];
-
-  if (viewParam && validViews.includes(viewParam as ViewTab)) {
+  const VALID_VIEWS = ["today", "week", "for-you"] as const;
+  if (viewParam && (VALID_VIEWS as readonly string[]).includes(viewParam)) {
     return viewParam as ViewTab;
   }
-
-  return "today";
+  // Default to "week" for a fuller feed on first load
+  return "week";
 }

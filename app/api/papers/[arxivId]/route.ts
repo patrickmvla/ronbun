@@ -1,17 +1,21 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/papers/[arxivId]/route.ts
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { db, schema } from "@/lib/drizzle/db";
 import { eq, asc, desc } from "drizzle-orm";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, ctx: { params: { arxivId: string } }) {
+export async function GET(req: NextRequest) {
   try {
-    const raw = String(ctx.params?.arxivId || "").trim();
+    // Extract [arxivId] from URL path (last segment)
+    const { pathname } = req.nextUrl;
+    const segments = pathname.split("/").filter(Boolean);
+    const raw = decodeURIComponent(segments[segments.length - 1] || "").trim();
     if (!raw) return json({ error: "Missing arXiv ID" }, 400);
 
-    const baseId = stripVersion(decodeURIComponent(raw));
+    const baseId = stripVersion(raw);
 
     // 1) Paper
     const paper = await db.query.papers.findFirst({
@@ -73,7 +77,7 @@ export async function GET(_req: Request, ctx: { params: { arxivId: string } }) {
       .limit(1)
       .then((rows) => rows[0] ?? null);
 
-    // Build response payload (aligns with lib/zod PaperDetail; extra fields tolerated)
+    // Build response payload
     const codeUrls = dedupe([
       ...(enrich?.codeUrls ?? []),
       ...(structured?.codeUrls ?? []),

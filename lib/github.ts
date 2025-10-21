@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // lib/github.ts
 // GitHub helpers: parse repo URLs and fetch repo metadata/readme via GitHub REST API v3.
 

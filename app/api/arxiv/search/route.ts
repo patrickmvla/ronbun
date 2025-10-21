@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/arxiv/search/route.ts
 import { NextResponse } from "next/server";
 import { searchArxiv, type ArxivSearchParams } from "@/lib/arxiv";

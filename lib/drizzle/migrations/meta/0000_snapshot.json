@@ -1,28 +1,9 @@
 {
-  "id": "ada44f4d-f1b0-4de6-b07a-6519bf7c3b9f",
+  "id": "51961f79-8a55-40f5-b835-1762aef0be70",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "auth.users": {
-      "name": "users",
-      "schema": "auth",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.authors": {
       "name": "authors",
       "schema": "",
@@ -184,22 +165,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "digests_user_id_users_id_fk": {
-          "name": "digests_user_id_users_id_fk",
-          "tableFrom": "digests",
-          "tableTo": "users",
-          "schemaTo": "auth",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1082,22 +1048,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "profiles_id_users_id_fk": {
-          "name": "profiles_id_users_id_fk",
-          "tableFrom": "profiles",
-          "tableTo": "users",
-          "schemaTo": "auth",
-          "columnsFrom": [
-            "id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1428,20 +1379,6 @@
         }
       },
       "foreignKeys": {
-        "user_saves_user_id_users_id_fk": {
-          "name": "user_saves_user_id_users_id_fk",
-          "tableFrom": "user_saves",
-          "tableTo": "users",
-          "schemaTo": "auth",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "user_saves_paper_id_papers_id_fk": {
           "name": "user_saves_paper_id_papers_id_fk",
           "tableFrom": "user_saves",
@@ -1546,22 +1483,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "watchlists_user_id_users_id_fk": {
-          "name": "watchlists_user_id_users_id_fk",
-          "tableFrom": "watchlists",
-          "tableTo": "users",
-          "schemaTo": "auth",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1609,9 +1531,7 @@
       ]
     }
   },
-  "schemas": {
-    "auth": "auth"
-  },
+  "schemas": {},
   "sequences": {},
   "roles": {},
   "policies": {},
