@@ -3,6 +3,7 @@
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Mail, Github, ArrowLeft, Loader2 } from "lucide-react";
@@ -14,9 +15,11 @@ import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/componen
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+export const dynamic = "force-dynamic";
+
 type Step = "form" | "sent";
 
-export default function SignInPage() {
+function SignInContent() {
   const supabase = React.useMemo<SupabaseClient | null>(() => createSupabaseClient(), []);
   const search = useSearchParams();
   const next = search?.get("next") || "/feed";
@@ -27,7 +30,8 @@ export default function SignInPage() {
   const [error, setError] = React.useState<string>("");
 
   const getCallbackUrl = React.useCallback(() => {
-    const origin = typeof window !== "undefined" ? window.location.origin : process.env.APP_URL || "http://localhost:3000";
+    const origin =
+      typeof window !== "undefined" ? window.location.origin : process.env.APP_URL || "http://localhost:3000";
     return `${origin}/auth/callback?next=${encodeURIComponent(next)}`;
   }, [next]);
 
@@ -204,5 +208,45 @@ export default function SignInPage() {
         </Link>
       </div>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 py-10 sm:py-16">
+          <div className="mb-4">
+            <Button asChild variant="ghost" size="sm" className="h-8 px-2" disabled>
+              <span className="inline-flex items-center gap-2">
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </span>
+            </Button>
+          </div>
+          <Card className="border bg-card">
+            <CardHeader>
+              <CardTitle className="text-lg">Sign in to Ronbun</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                <div className="h-9 w-full rounded-md border bg-muted/30" />
+                <div className="h-9 w-full rounded-md border bg-muted/30" />
+                <div className="flex items-center justify-center text-sm text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Loading…
+                </div>
+              </div>
+              <div className="my-4">
+                <Separator />
+              </div>
+              <div className="h-9 w-full rounded-md border bg-muted/30" />
+            </CardContent>
+          </Card>
+        </div>
+      }
+    >
+      <SignInContent />
+    </Suspense>
   );
 }

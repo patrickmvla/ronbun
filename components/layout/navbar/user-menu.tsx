@@ -56,8 +56,8 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
     try {
       await onSignOut();
     } catch (error) {
-      // Optional: surface a toast here
-       console.error("Sign out error:", error);
+      // No-op or show toast
+      console.error("Sign out error:", error);
     } finally {
       setSigningOut(false);
     }
@@ -65,6 +65,7 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
 
   const displayName = getUserDisplayName(user);
   const avatarAlt = user ? `${displayName}'s avatar` : "User avatar";
+  const showSpinnerInAvatar = signingOut || (!user && isLoading);
 
   return (
     <DropdownMenu>
@@ -73,7 +74,8 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
           variant="ghost"
           size="sm"
           className="px-2 focus-visible:ring-2 focus-visible:ring-primary"
-          disabled={isLoading || signingOut}
+          // Let signed-in users open menu even if some background load is happening
+          disabled={signingOut}
           aria-label={user ? `Account menu for ${displayName}` : "Account menu"}
           aria-busy={isLoading || signingOut}
         >
@@ -83,8 +85,11 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
                 <AvatarImage src={user.avatar} alt={avatarAlt} />
               ) : (
                 <AvatarFallback className="text-xs">
-                  {isLoading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  {showSpinnerInAvatar ? (
+                    <Loader2
+                      className="h-3.5 w-3.5 animate-spin"
+                      aria-hidden="true"
+                    />
                   ) : user ? (
                     getUserInitials(displayName)
                   ) : (
@@ -94,7 +99,7 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
               )}
             </Avatar>
             <span className="hidden sm:inline text-sm max-w-[160px] truncate">
-              {isLoading ? "Loading…" : displayName}
+              {!user && isLoading ? "Loading…" : displayName}
             </span>
           </div>
         </Button>
@@ -123,7 +128,10 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
               className="text-destructive focus:text-destructive"
             >
               {signingOut ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                <Loader2
+                  className="mr-2 h-4 w-4 animate-spin"
+                  aria-hidden="true"
+                />
               ) : (
                 <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
               )}

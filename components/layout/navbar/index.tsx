@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Bell, LayoutGrid } from "lucide-react";
@@ -12,7 +13,7 @@ import { NavLink } from "./nav-link";
 import { useAuth } from "@/hooks/use-auth";
 import { NAV_ITEMS, NAVBAR_CONFIG } from "@/config/navigation";
 
-export default function Navbar() {
+function NavbarInner() {
   const pathname = usePathname();
   const { user, isLoading, signOut } = useAuth();
 
@@ -70,8 +71,16 @@ export default function Navbar() {
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Search */}
-          <SearchBar className="hidden md:flex min-w-[320px] max-w-md" />
+          {/* Search (wrap with Suspense; SearchBar uses next/navigation hooks) */}
+          <Suspense
+            fallback={
+              <div className="hidden md:flex min-w-[320px] max-w-md">
+                <div className="h-9 w-full rounded-md border bg-muted/30" />
+              </div>
+            }
+          >
+            <SearchBar className="hidden md:flex min-w-[320px] max-w-md" />
+          </Suspense>
 
           {/* Actions */}
           <div className="flex items-center gap-1">
@@ -88,5 +97,67 @@ export default function Navbar() {
         </div>
       </div>
     </nav>
+  );
+}
+
+export default function Navbar() {
+  // Wrap the component that calls usePathname/useSearchParams in Suspense
+  return (
+    <Suspense
+      fallback={
+        <nav
+          className="sticky top-0 z-50 backdrop-blur supports-[backdrop-filter]:bg-background/70 border-b"
+          role="navigation"
+          aria-label="Main navigation"
+        >
+          <div className="mx-auto max-w-7xl px-3 sm:px-4">
+            <div className="flex h-14 items-center gap-2">
+              {/* Brand */}
+              <div
+                className="flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-md"
+                aria-label="Ronbun home (loading)"
+              >
+                <div className="inline-flex h-8 w-8 items-center justify-center rounded-md border bg-card">
+                  <LayoutGrid className="h-4 w-4 text-primary" aria-hidden="true" />
+                </div>
+                <span className="font-semibold tracking-tight">
+                  {NAVBAR_CONFIG.brandName}
+                </span>
+                <Badge
+                  variant="secondary"
+                  className="hidden sm:inline-flex border border-primary/30 text-primary"
+                >
+                  beta
+                </Badge>
+              </div>
+
+              {/* Spacer */}
+              <div className="flex-1" />
+
+              {/* Search placeholder */}
+              <div className="hidden md:flex min-w-[320px] max-w-md">
+                <div className="h-9 w-full rounded-md border bg-muted/30" />
+              </div>
+
+              {/* Actions placeholder */}
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="hidden sm:inline-flex"
+                  aria-label="View notifications"
+                  disabled
+                >
+                  <Bell className="h-5 w-5" />
+                </Button>
+                <div className="h-8 w-24 rounded-md border bg-muted/30" />
+              </div>
+            </div>
+          </div>
+        </nav>
+      }
+    >
+      <NavbarInner />
+    </Suspense>
   );
 }

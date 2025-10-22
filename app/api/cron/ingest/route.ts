@@ -66,7 +66,8 @@ export async function POST(req: Request) {
       .returning({ id: schema.ingestRuns.id });
     runId = insertedRun[0]?.id ?? null;
 
-    const since = LOOKBACK_DAYS > 0 ? new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000) : null;
+    const since =
+      LOOKBACK_DAYS > 0 ? new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000) : null;
 
     outer: for (const cat of cats) {
       for (let page = 0; page < PAGES; page++) {
@@ -98,10 +99,13 @@ export async function POST(req: Request) {
             })
           : items;
 
+        // Dedupe by base arXiv ID across this page’s results to avoid double work
+        const deduped = dedupeArxivItemsByBaseId(filtered);
+
         let processedHere = 0;
         let hitDeadline = false;
 
-        await mapLimit(filtered, CONCURRENCY, async (it) => {
+        await mapLimit(deduped, CONCURRENCY, async (it) => {
           if (Date.now() > deadline) {
             hitDeadline = true;
             return;
@@ -178,39 +182,52 @@ export async function POST(req: Request) {
 
 /* ========== Core upsert ========== */
 
-async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string, pruneAuthors = false): Promise<boolean> {
+// Race-safe, idempotent upsert of paper + authors + version
+async function upsertPaperFromArxivItem(
+  item: ArxivItem,
+  queryCat?: string,
+  pruneAuthors = false
+): Promise<boolean> {
   const { baseId, version } = splitArxivId(item.arxivId);
   const categories = dedupe([...(item.categories ?? []), ...(queryCat ? [queryCat] : [])]);
 
-  // Find existing paper by base ID
-  const existing = await db.query.papers.findFirst({
-    where: (p, { eq }) => eq(p.arxivIdBase, baseId),
-  });
+  // Try insert first (idempotent); if exists, patch
+  const inserted = await db
+    .insert(schema.papers)
+    .values({
+      arxivIdBase: baseId,
+      latestVersion: version,
+      title: item.title,
+      abstract: item.summary,
+      categories,
+      primaryCategory: queryCat ?? categories[0] ?? null,
+      publishedAt: toDate(item.published) ?? new Date(),
+      updatedAt: toDate(item.updated) ?? toDate(item.published) ?? new Date(),
+      pdfUrl: item.pdfUrl ?? null,
+      absUrl: `https://arxiv.org/abs/${baseId}`,
+    })
+    .onConflictDoNothing({ target: schema.papers.arxivIdBase })
+    .returning({ id: schema.papers.id });
 
   let paperId: string;
 
-  if (!existing) {
-    const inserted = await db
-      .insert(schema.papers)
-      .values({
-        arxivIdBase: baseId,
-        latestVersion: version,
-        title: item.title,
-        abstract: item.summary,
-        categories,
-        primaryCategory: queryCat ?? categories[0] ?? null,
-        publishedAt: toDate(item.published) ?? new Date(),
-        updatedAt: toDate(item.updated) ?? toDate(item.published) ?? new Date(),
-        pdfUrl: item.pdfUrl ?? null,
-        absUrl: `https://arxiv.org/abs/${baseId}`,
-      })
-      .returning({ id: schema.papers.id });
+  if (inserted.length > 0) {
+    // Fresh insert
     paperId = inserted[0].id;
   } else {
+    // Already exists — fetch and patch selectively
+    const existing = await db.query.papers.findFirst({
+      where: (p, { eq }) => eq(p.arxivIdBase, baseId),
+    });
+    if (!existing) {
+      // Extremely rare race; skip gracefully
+      return false;
+    }
     paperId = existing.id;
 
     const mergedCats = dedupe([...(existing.categories ?? []), ...categories]);
     const newLatest = Math.max(Number(existing.latestVersion || 1), version);
+
     await db
       .update(schema.papers)
       .set({
@@ -242,7 +259,7 @@ async function upsertPaperFromArxivItem(item: ArxivItem, queryCat?: string, prun
       });
   }
 
-  // Optionally prune authors that are no longer on the paper
+  // Optionally prune authors no longer present
   if (pruneAuthors) {
     const rows = await db
       .select({ authorId: schema.paperAuthors.authorId })
@@ -312,6 +329,19 @@ function normalizeName(s: string): string {
 
 function dedupe<T>(arr: T[]): T[] {
   return Array.from(new Set(arr));
+}
+
+function dedupeArxivItemsByBaseId(items: ArxivItem[]): ArxivItem[] {
+  const seen = new Set<string>();
+  const out: ArxivItem[] = [];
+  for (const it of items) {
+    const { baseId } = splitArxivId(it.arxivId);
+    if (!seen.has(baseId)) {
+      seen.add(baseId);
+      out.push(it);
+    }
+  }
+  return out;
 }
 
 function asBool(v: string | null, def: boolean): boolean {

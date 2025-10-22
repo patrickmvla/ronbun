@@ -11,6 +11,7 @@ import type { UseAuthReturn, User } from "@/types/auth";
 
 export function useAuth(): UseAuthReturn {
   const router = useRouter();
+
   const supabase = useMemo(() => {
     try {
       return createClient();
@@ -25,6 +26,7 @@ export function useAuth(): UseAuthReturn {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const mounted = useRef(true);
+  const initialized = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -32,14 +34,21 @@ export function useAuth(): UseAuthReturn {
     };
   }, []);
 
-  const setStateSafe = useCallback((updater: () => void) => {
-    if (mounted.current) updater();
+  const setSafe = useCallback((fn: () => void) => {
+    if (mounted.current) fn();
   }, []);
 
-  // Load current session and derive user
+  const finishInit = useCallback(() => {
+    if (!initialized.current) {
+      initialized.current = true;
+      setSafe(() => setIsLoading(false));
+    }
+  }, [setSafe]);
+
+  // Load current session and derive user (initial)
   const loadFromSession = useCallback(async () => {
     if (!supabase) {
-      setStateSafe(() => {
+      setSafe(() => {
         setUser(null);
         setIsLoading(false);
       });
@@ -47,42 +56,46 @@ export function useAuth(): UseAuthReturn {
     }
     try {
       const { data, error } = await supabase.auth.getSession();
-      if (error) {
-        if (process.env.NODE_ENV !== "production") {
-          console.warn("auth.getSession error:", error.message);
-        }
-        setStateSafe(() => {
-          setUser(null);
-        });
-        return;
+      if (error && process.env.NODE_ENV !== "production") {
+        console.warn("auth.getSession error:", error.message);
       }
       const sessionUser = data?.session?.user ?? null;
-      setStateSafe(() => {
+      setSafe(() => {
         setUser(mapSupabaseUser(sessionUser));
       });
     } finally {
-      setStateSafe(() => setIsLoading(false));
+      finishInit();
     }
-  }, [supabase, setStateSafe]);
+  }, [supabase, setSafe, finishInit]);
 
-  // Auth change handler
+  // Auth change handler (covers INITIAL_SESSION too)
   const handleAuthChange = useCallback(
     (event: AuthChangeEvent, session: Session | null) => {
       const mapped = mapSupabaseUser(session?.user ?? null);
-      setStateSafe(() => {
+      setSafe(() => {
         setUser(mapped);
         setIsLoading(false);
       });
 
+      // React to auth lifecycle
       if (event === "SIGNED_OUT") {
-        // Avoid redirect loops; you can tweak this if you want a different behavior
-        router.push("/auth/sign-in");
-      } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+        // Avoid redirect loops
+        if (window.location.pathname !== "/auth/sign-in") {
+          router.push("/auth/sign-in");
+        }
+      } else if (
+        event === "SIGNED_IN" ||
+        event === "TOKEN_REFRESHED" ||
+        event === "USER_UPDATED" ||
+        event === "INITIAL_SESSION"
+      ) {
         // Ensure server components re-fetch with the new auth cookies
-        router.refresh();
+        try {
+          router.refresh();
+        } catch {}
       }
     },
-    [router, setStateSafe]
+    [router, setSafe]
   );
 
   // Initialize: load session and subscribe to auth changes
@@ -93,15 +106,23 @@ export function useAuth(): UseAuthReturn {
       return;
     }
 
+    // Fail-safe: never hang loading forever
+    const fail = setTimeout(() => {
+      finishInit();
+    }, 1500);
+
+    // 1) Kick off initial session load
     loadFromSession();
 
+    // 2) Subscribe to auth changes (includes INITIAL_SESSION)
     const { data } = supabase.auth.onAuthStateChange(handleAuthChange);
     const sub = data?.subscription;
 
     return () => {
+      clearTimeout(fail);
       sub?.unsubscribe();
     };
-  }, [supabase, loadFromSession, handleAuthChange]);
+  }, [supabase, loadFromSession, handleAuthChange, finishInit]);
 
   // Public API
   const signOut = useCallback(async () => {
@@ -110,9 +131,9 @@ export function useAuth(): UseAuthReturn {
       return;
     }
     try {
-      setStateSafe(() => setIsLoading(true));
+      setSafe(() => setIsLoading(true));
       await supabase.auth.signOut();
-      setStateSafe(() => setUser(null));
+      setSafe(() => setUser(null));
       router.push("/auth/sign-in");
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
@@ -120,19 +141,14 @@ export function useAuth(): UseAuthReturn {
       }
       router.push("/auth/sign-in");
     } finally {
-      setStateSafe(() => setIsLoading(false));
+      setSafe(() => setIsLoading(false));
     }
-  }, [supabase, router, setStateSafe]);
+  }, [supabase, router, setSafe]);
 
   const refresh = useCallback(async () => {
-    setStateSafe(() => setIsLoading(true));
+    setSafe(() => setIsLoading(true));
     await loadFromSession();
-  }, [loadFromSession, setStateSafe]);
+  }, [loadFromSession, setSafe]);
 
-  return {
-    user,
-    isLoading,
-    signOut,
-    refresh,
-  };
+  return { user, isLoading, signOut, refresh };
 }
