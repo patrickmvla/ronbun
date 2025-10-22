@@ -47,7 +47,7 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
   };
 
   const handleSettings = () => {
-    router.push("/settings/watchlists");
+    router.push("/settings/account");
   };
 
   const handleSignOut = async () => {

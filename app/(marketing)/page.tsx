@@ -1,3 +1,4 @@
+// app/(marketing)/page.tsx
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,15 +31,19 @@ import { FeatureTile } from "@/components/marketing/feature-tile";
 import { PersonaTile } from "@/components/marketing/persona-tile";
 import { Stat } from "@/components/marketing/stat";
 import { TimelineStep } from "@/components/marketing/timeline-step";
+import { FAQS, FEATURES, PERSONAS, TIMELINE_STEPS } from "@/config/marketing-content";
 
-import {
-  FAQS,
-  FEATURES,
-  PERSONAS,
-  TIMELINE_STEPS
-} from "@/config/marketing-content";
+import { getAuth } from "@/lib/auth";
+// If you prefer auto-redirect signed-in users to /feed, uncomment:
+// import { redirect } from "next/navigation";
 
-export default function MarketingPage() {
+export default async function MarketingPage() {
+  const { user } = await getAuth();
+  const authed = Boolean(user);
+
+  // If you want to auto-launch the app when signed in, uncomment:
+  // if (authed) redirect("/feed");
+
   return (
     <div className="relative overflow-x-hidden">
       {/* Skip to main content link */}
@@ -92,15 +97,27 @@ export default function MarketingPage() {
         </p>
 
         <div className="mt-8 flex items-center justify-center gap-3">
-          <Button asChild className="btn-primary gap-2">
-            <Link href="/feed" prefetch>
-              Launch app
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </Button>
-          <Button asChild variant="secondary" className="hover:bg-accent">
-            <Link href="/auth/sign-in">Sign in</Link>
-          </Button>
+          {/* If signed in: show single CTA to feed. If not: show Launch + Sign in */}
+          {authed ? (
+            <Button asChild className="btn-primary gap-2">
+              <Link href="/feed" prefetch>
+                Go to feed
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </Button>
+          ) : (
+            <>
+              <Button asChild className="btn-primary gap-2">
+                <Link href="/feed" prefetch>
+                  Launch app
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+              </Button>
+              <Button asChild variant="secondary" className="hover:bg-accent">
+                <Link href="/auth/sign-in">Sign in</Link>
+              </Button>
+            </>
+          )}
         </div>
 
         {/* Stats */}
@@ -142,7 +159,7 @@ export default function MarketingPage() {
               <EmptyContent>
                 <Button asChild className="btn-primary gap-2">
                   <Link href="/feed" prefetch>
-                    Launch app
+                    {authed ? "Go to feed" : "Launch app"}
                     <ArrowRight className="h-4 w-4" />
                   </Link>
                 </Button>
@@ -157,9 +174,7 @@ export default function MarketingPage() {
         className="mx-auto max-w-6xl px-4 md:px-6 py-14"
         aria-labelledby="features-title"
       >
-        <h2 id="features-title" className="sr-only">
-          Features
-        </h2>
+        <h2 id="features-title" className="sr-only">Features</h2>
         <FeatureHighlight />
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3" role="list">
           <FeatureTile
@@ -216,19 +231,13 @@ export default function MarketingPage() {
           </div>
         </div>
         <div className="relative mt-8">
-          {/* Connector line for desktop */}
           <div
             className="pointer-events-none absolute left-0 right-0 top-8 hidden h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent md:block"
             aria-hidden="true"
           />
           <ol className="grid gap-5 md:grid-cols-3">
             {TIMELINE_STEPS.map((step) => (
-              <TimelineStep
-                key={step.number}
-                number={step.number}
-                title={step.title}
-                bullets={step.bullets}
-              />
+              <TimelineStep key={step.number} number={step.number} title={step.title} bullets={step.bullets} />
             ))}
           </ol>
         </div>
@@ -243,9 +252,7 @@ export default function MarketingPage() {
           <h2 id="built-for-title" className="text-xl font-semibold tracking-tight">
             Built for
           </h2>
-          <p className="hidden md:block text-xs text-muted-foreground">
-            Different roles, same momentum.
-          </p>
+          <p className="hidden md:block text-xs text-muted-foreground">Different roles, same momentum.</p>
         </div>
         <div className="mt-4 grid gap-4 md:grid-cols-3" role="list">
           <PersonaTile
@@ -274,9 +281,7 @@ export default function MarketingPage() {
         className="mx-auto max-w-5xl px-4 md:px-6 pb-16"
         aria-labelledby="faq-title"
       >
-        <h2 id="faq-title" className="text-lg font-semibold tracking-tight">
-          FAQ
-        </h2>
+        <h2 id="faq-title" className="text-lg font-semibold tracking-tight">FAQ</h2>
         <div className="mt-4 space-y-3">
           {FAQS.map((faq) => (
             <FaqItem key={faq.question} question={faq.question} answer={faq.answer} />
