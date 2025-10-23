@@ -113,9 +113,9 @@ export default async function MarketingPage() {
                   <ArrowRight className="h-4 w-4" />
                 </Link>
               </Button>
-              <Button asChild variant="secondary" className="hover:bg-accent">
+              {/* <Button asChild variant="secondary" className="hover:bg-accent">
                 <Link href="/auth/sign-in">Sign in</Link>
-              </Button>
+              </Button> */}
             </>
           )}
         </div>

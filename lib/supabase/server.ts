@@ -6,6 +6,8 @@ import {
   type CookieMethodsServer,
 } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
 function isHttpUrl(url?: string | null) {
   if (!url) return false;
@@ -17,55 +19,48 @@ function isHttpUrl(url?: string | null) {
   }
 }
 
-function isPromise<T = unknown>(v: any): v is Promise<T> {
-  return !!v && typeof v.then === "function";
-}
-
 // Node runtime only. Do not import in Edge routes.
+// RSC/Server components: must await cookies() before use in your setup.
 export async function createClient(): Promise<SupabaseClient | null> {
-  // Read raw envs (can be undefined at type-level)
   const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const rawKey =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  // Runtime guard + early exit (prevents crashes in dev)
   if (!isHttpUrl(rawUrl) || !rawKey) {
     if (process.env.NODE_ENV !== "production") {
       console.warn(
-        `[supabase] Missing/invalid env. URL=${rawUrl ? `"${rawUrl}"` : "unset"} KEY=${rawKey ? "set" : "unset"} — Auth disabled for this request.`
+        `[supabase] Missing/invalid env. URL=${
+          rawUrl ? `"${rawUrl}"` : "unset"
+        } KEY=${rawKey ? "set" : "unset"} — Auth disabled for this request.`
       );
     }
     return null;
   }
 
-  // After guards, assert to string so TS sees the correct overload
   const url = rawUrl as string;
   const key = rawKey as string;
 
-  // Support both Next 14 (Promise) and Next 15 (sync) cookies()
-  const cookieStoreMaybe = cookies() as any;
-  const cookieStore = isPromise(cookieStoreMaybe) ? await cookieStoreMaybe : cookieStoreMaybe;
+  // IMPORTANT: await cookies() here to satisfy Next's dynamic API requirements
+  const cookieStore = await cookies();
 
-  const cs: any = cookieStore; // normalize for differing Next types
-
-  // Use the new cookie adapter API; typing forces non-deprecated overload
   const cookieAdapter: CookieMethodsServer = {
     getAll() {
       try {
-        const all = typeof cs.getAll === "function" ? cs.getAll() : [];
-        return all.map(({ name, value }: any) => ({ name, value }));
+        // Map Next cookies → { name, value }[]
+        return cookieStore.getAll().map(({ name, value }) => ({ name, value }));
       } catch {
         return [];
       }
     },
     setAll(cookiesToSet) {
-      // In RSC, cookies are read-only; .set won’t exist—safely ignore
+      // In RSC, cookies are often read-only; guard set()
       try {
-        if (typeof cs.set !== "function") return;
-        for (const { name, value, options } of cookiesToSet) {
-          cs.set(name, value, options);
-        }
+       
+        if (typeof (cookieStore as any).set !== "function") return;
+        cookiesToSet.forEach(({ name, value, options }) => {
+          (cookieStore as any).set(name, value, options);
+        });
       } catch {
         // no-op
       }
@@ -73,4 +68,48 @@ export async function createClient(): Promise<SupabaseClient | null> {
   };
 
   return createServerClient(url, key, { cookies: cookieAdapter });
+}
+
+// Route handlers: bind cookies to a response so refreshed/cleared auth cookies persist.
+// Usage:
+// export async function POST(req: NextRequest) {
+//   const res = NextResponse.next();
+//   const supabase = createRouteClient(req, res);
+//   await supabase?.auth.getSession(); // refresh cookies if needed
+//   return res;
+// }
+export function createRouteClient(
+  req: NextRequest,
+  res: NextResponse
+): SupabaseClient | null {
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const rawKey =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!isHttpUrl(rawUrl) || !rawKey) return null;
+
+  const url = rawUrl as string;
+  const key = rawKey as string;
+
+  const cookieAdapter: CookieMethodsServer = {
+    getAll() {
+      return req.cookies.getAll();
+    },
+    setAll(cookiesToSet) {
+      cookiesToSet.forEach(({ name, value, options }) => {
+        res.cookies.set(name, value, options);
+      });
+    },
+  };
+
+  return createServerClient(url, key, { cookies: cookieAdapter });
+}
+
+// Helper for server routes that need to return JSON while carrying auth cookies
+export function attachAuthCookies(from: NextResponse, to: NextResponse): NextResponse {
+  for (const c of from.cookies.getAll()) {
+    to.cookies.set(c);
+  }
+  return to;
 }

@@ -7,7 +7,9 @@ import { ExplainInput } from "@/lib/zod";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const DEFAULT_MODEL = process.env.GROQ_EXPLAIN_MODEL || "llama-3.3-70b-versatile";
+const DEFAULT_MODEL =
+  process.env.GROQ_EXPLAIN_MODEL || process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const ENV_TIER = process.env.GROQ_SERVICE_TIER?.trim(); // e.g., "on_demand"; leave unset to omit
 
 export async function POST(req: Request) {
   try {
@@ -18,39 +20,65 @@ export async function POST(req: Request) {
     const url = new URL(req.url);
     const modelId = url.searchParams.get("model") || DEFAULT_MODEL;
 
+    // Optional: allow ?tier=on_demand or ?tier=none to override/omit
+    const tierParam = url.searchParams.get("tier")?.trim();
+    const effectiveTier =
+      tierParam && tierParam.toLowerCase() !== "none" ? tierParam : ENV_TIER;
+
     const body = await req.json();
     const parsed = ExplainInput.safeParse(body);
     if (!parsed.success) {
-      return json({ error: "Invalid input", issues: parsed.error.flatten() }, 400);
+      return json(
+        { error: "Invalid input", issues: parsed.error.flatten() },
+        400
+      );
     }
 
     const { title, abstract, level, readme } = parsed.data;
 
-    const result = await streamText({
-      model: groq(modelId),
-      temperature: 0.2,
-      maxOutputTokens: 1200, // v5
-      providerOptions: { groq: { serviceTier: "flex" } },
-      messages: [
-        { role: "system", content: buildSystemPrompt(level) },
-        {
-          role: "user",
-          content: [
-            `Level: ${level}`,
-            `Title: ${title}`,
-            "",
-            "Abstract:",
-            abstract,
-            "",
-            readme ? `README (optional):\n${readme}` : "",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    });
+    const run = async (withTier: boolean) => {
+      return await streamText({
+        model: groq(modelId),
+        temperature: 0.2,
+        maxOutputTokens: 1200,
+        ...(withTier && effectiveTier
+          ? { providerOptions: { groq: { serviceTier: effectiveTier } } }
+          : {}),
+        messages: [
+          { role: "system", content: buildSystemPrompt(level) },
+          {
+            role: "user",
+            content:
+              [
+                `Level: ${level}`,
+                `Title: ${title}`,
+                "",
+                "Abstract:",
+                abstract,
+                "",
+                readme ? `README (optional):\n${readme}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n") || "",
+          },
+        ],
+      });
+    };
 
-    return result.toTextStreamResponse();
+    try {
+      // First attempt: only include tier if provided via env or query
+      const result = await run(Boolean(effectiveTier));
+      return result.toTextStreamResponse();
+    } catch (e: any) {
+      const msg: string =
+        e?.data?.error?.message || e?.message || e?.toString?.() || "";
+      // If Groq rejects the tier, retry once without any tier
+      if (msg.includes("service_tier")) {
+        const result = await run(false);
+        return result.toTextStreamResponse();
+      }
+      throw e;
+    }
   } catch (err: any) {
     return json({ error: err?.message || "Failed to generate explainer" }, 500);
   }
@@ -102,6 +130,9 @@ function buildSystemPrompt(level: "eli5" | "student" | "expert") {
 function json(body: unknown, status = 200, headers?: Record<string, string>) {
   return new NextResponse(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...(headers || {}) },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...(headers || {}),
+    },
   });
 }

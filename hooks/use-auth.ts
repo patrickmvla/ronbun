@@ -79,10 +79,8 @@ export function useAuth(): UseAuthReturn {
 
       // React to auth lifecycle
       if (event === "SIGNED_OUT") {
-        // Avoid redirect loops
-        if (window.location.pathname !== "/auth/sign-in") {
-          router.push("/auth/sign-in");
-        }
+        // Navigate to sign-in and ensure SSR sees signed-out state
+        router.replace("/auth/sign-in");
       } else if (
         event === "SIGNED_IN" ||
         event === "TOKEN_REFRESHED" ||
@@ -126,20 +124,35 @@ export function useAuth(): UseAuthReturn {
 
   // Public API
   const signOut = useCallback(async () => {
+    // If client missing, just bounce
     if (!supabase) {
-      router.push("/auth/sign-in");
+      router.replace("/auth/sign-in");
       return;
     }
     try {
       setSafe(() => setIsLoading(true));
+
+      // 1) Clear browser/local session (broadcasts SIGNED_OUT)
       await supabase.auth.signOut();
+
+      // 2) Clear SSR cookies so server components don't see a ghost session
+      try {
+        await fetch("/api/auth/signout", { method: "POST", cache: "no-store" });
+      } catch {
+        // Non-fatal; continue
+      }
+
+      // 3) Local state + redirect
       setSafe(() => setUser(null));
-      router.push("/auth/sign-in");
+      router.replace("/auth/sign-in");
+
+      // Optional nuclear option if you still see stale UI:
+      // window.location.assign("/auth/sign-in");
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
         console.warn("signOut error:", (err as any)?.message || err);
       }
-      router.push("/auth/sign-in");
+      router.replace("/auth/sign-in");
     } finally {
       setSafe(() => setIsLoading(false));
     }
