@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 const DEFAULT_MODEL =
   process.env.GROQ_EXPLAIN_MODEL ||
   process.env.GROQ_MODEL ||
-  "llama-3.3-70b-versatile"; // keep your current default; override via env if desired
+  "llama-3.3-70b-versatile"; // override via env if desired
 
 const ENV_TIER = process.env.GROQ_SERVICE_TIER?.trim(); // e.g., "on_demand"; leave unset to omit
 
@@ -40,7 +40,7 @@ export async function POST(req: Request) {
 
     const { title, abstract, level, readme } = parsed.data;
 
-    // IMPORTANT: make this a mutable array (no "as const")
+    // Build messages (mutable array)
     const messages: { role: "system" | "user"; content: string }[] = [
       { role: "system", content: buildSystemPrompt(level) },
       {
@@ -60,7 +60,6 @@ export async function POST(req: Request) {
       },
     ];
 
-    // one streaming attempt
     const runOnce = async (withTier: boolean) => {
       return await streamText({
         model: groq(modelId),
@@ -69,16 +68,16 @@ export async function POST(req: Request) {
         ...(withTier && effectiveTier
           ? { providerOptions: { groq: { serviceTier: effectiveTier } } }
           : {}),
-        messages, // now mutable type
+        messages,
       });
     };
 
-    // retry handler with backoff + retry-after for 429/5xx
+    // Retry-aware wrapper (handles 429 + transient 5xx; respects Retry-After)
     const runWithRateLimit = async (withTier: boolean) => {
       const attempts = 3;
       const base = 750; // ms
-
       let lastErr: any = null;
+
       for (let i = 0; i < attempts; i++) {
         try {
           return await runOnce(withTier);
@@ -89,7 +88,6 @@ export async function POST(req: Request) {
           const msg =
             e?.data?.error?.message || e?.message || e?.toString?.() || "";
 
-          // 429 → respect retry-after, else exponential backoff with jitter
           if (status === 429) {
             const ra = parseRetryAfter(headers["retry-after"]);
             const wait = ra ?? jitter(base * Math.pow(2, i));
@@ -97,19 +95,16 @@ export async function POST(req: Request) {
             continue;
           }
 
-          // transient 5xx → backoff
           if (status === 500 || status === 502 || status === 503 || status === 504) {
             await sleep(jitter(base * Math.pow(2, i)));
             continue;
           }
 
-          // service tier rejection: bubble up so we can retry without tier once
           if (msg.includes("service_tier")) {
-            throw e;
+            throw e; // bubble up to try once w/o tier
           }
 
-          // non-retryable
-          break;
+          break; // non-retryable
         }
       }
       throw lastErr;
@@ -121,7 +116,7 @@ export async function POST(req: Request) {
     } catch (e: any) {
       const msg: string =
         e?.data?.error?.message || e?.message || e?.toString?.() || "";
-      // If Groq rejects the tier, retry once without any tier (also rate-limit aware)
+      // If Groq rejects the tier, retry once without any tier
       if (msg.includes("service_tier")) {
         const result = await runWithRateLimit(false);
         return result.toTextStreamResponse();
@@ -136,43 +131,51 @@ export async function POST(req: Request) {
 function buildSystemPrompt(level: "eli5" | "student" | "expert") {
   const common = [
     "Explain ONLY from the provided title, abstract, and optional README.",
+    'Plain text only. Do not use Markdown formatting at all.',
+    'Never output lines starting with "#" (no headings) and do not use "**", "__", "_" or code fences/backticks.',
+    'Use simple section labels followed by a colon, e.g., "Overview:".',
+    'If you need lists, use lines that start with "• " (bullet) — not Markdown.',
     'If a detail is missing, write "Not stated".',
     "Do not speculate or add external information. Do not assert SOTA unless explicitly stated.",
-    "Structure the output into short sections separated by blank lines.",
+    "Keep sections short with a blank line between them.",
   ];
+
   if (level === "eli5") {
     return [
       ...common,
       "Audience: a curious non-expert (ELI5).",
       "Style: friendly, concrete, minimal jargon; use simple analogies when helpful.",
-      "Format:",
-      "What it is: <2–3 sentences>",
-      "How it works: <2–4 short sentences>",
-      "Why it matters / Examples: <1–3 sentences>",
-      "Limits: <1–2 sentences>",
+      "Format (use these labels exactly):",
+      "What it is:",
+      "How it works:",
+      "Why it matters / Examples:",
+      "Limits:",
     ].join("\n");
   }
+
   if (level === "student") {
     return [
       ...common,
       "Audience: undergrad/grad student.",
       "Style: concise, structured, clear terminology.",
-      "Format (use brief subsections):",
-      "Overview: <2–3 sentences>",
-      "Method: <key idea + main steps/components>",
-      "Evidence: <datasets/benchmarks/claims if stated>",
-      "Limitations: <risks, assumptions, or missing pieces>",
+      "Format (use these labels exactly):",
+      "Overview:",
+      "Method:",
+      "Evidence: (only if stated)",
+      "Limitations:",
     ].join("\n");
   }
+
+  // expert
   return [
     ...common,
     "Audience: expert reader.",
     "Style: terse and technical. Prefer specifics over analogies.",
-    "Format (bulleted where natural):",
-    "- Problem/Setup",
-    "- Approach/Architecture (modules, objectives, training/inference notes)",
-    "- Evaluation (datasets/benchmarks/claims) — only if stated",
-    "- Limitations/Caveats",
+    "Format (use these labels exactly; add brief bullet lines with “• ” only when needed):",
+    "Problem/Setup:",
+    "Approach/Architecture:",
+    "Evaluation: (only if stated)",
+    "Limitations/Caveats:",
   ].join("\n");
 }
 
