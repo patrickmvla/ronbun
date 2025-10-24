@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+// app/api/summarize/route.ts
 import { NextResponse } from "next/server";
 import { groq } from "@ai-sdk/groq";
 import { streamText } from "ai";
@@ -8,7 +9,10 @@ export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 const DEFAULT_MODEL =
-  process.env.GROQ_SUMMARIZE_MODEL || process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+  process.env.GROQ_SUMMARIZE_MODEL ||
+  process.env.GROQ_MODEL ||
+  "llama-3.3-70b-versatile"; // keep your current default; override via env if desired
+
 const ENV_TIER = process.env.GROQ_SERVICE_TIER?.trim(); // e.g., "on_demand"; leave unset to omit
 
 export async function POST(req: Request) {
@@ -33,7 +37,8 @@ export async function POST(req: Request) {
 
     const { title, abstract } = parsed.data;
 
-    const run = async (withTier: boolean) => {
+    // One attempt of streaming request
+    const runOnce = async (withTier: boolean) => {
       return await streamText({
         model: groq(modelId),
         temperature: 0.1,
@@ -58,24 +63,64 @@ export async function POST(req: Request) {
               "- Do NOT assert SOTA unless explicitly stated.",
             ].join("\n"),
           },
-          {
-            role: "user",
-            content: `Title: ${title}\n\nAbstract:\n${abstract}`,
-          },
+          { role: "user", content: `Title: ${title}\n\nAbstract:\n${abstract}` },
         ],
       });
     };
 
+    // Rate-limit aware runner with exponential backoff + retry-after
+    const runWithRateLimit = async (withTier: boolean) => {
+      const attempts = 3;
+      const base = 750; // ms backoff base
+
+      let lastErr: any = null;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          return await runOnce(withTier);
+        } catch (e: any) {
+          lastErr = e;
+          const status = e?.statusCode ?? e?.status;
+          const headers = e?.responseHeaders || {};
+          const msg =
+            e?.data?.error?.message || e?.message || e?.toString?.() || "";
+
+          // 429 rate limit: respect retry-after (seconds), else exponential backoff with jitter
+          if (status === 429) {
+            const ra = parseRetryAfter(headers["retry-after"]);
+            const wait = ra ?? jitter(base * Math.pow(2, i));
+            await sleep(wait);
+            continue;
+          }
+
+          // Transient 5xx → backoff and retry
+          if (status === 500 || status === 502 || status === 503 || status === 504) {
+            await sleep(jitter(base * Math.pow(2, i)));
+            continue;
+          }
+
+          // If it's a service tier error, bubble up; we'll try without tier once outside
+          if (msg.includes("service_tier")) {
+            throw e;
+          }
+
+          // Non-retryable → stop
+          break;
+        }
+      }
+      throw lastErr;
+    };
+
     try {
-      // First attempt: only include tier if provided via env or query
-      const result = await run(Boolean(effectiveTier));
+      // First: include tier only if provided (env/query). Backoff on 429/5xx.
+      const result = await runWithRateLimit(Boolean(effectiveTier));
       return result.toTextStreamResponse();
     } catch (e: any) {
       const msg: string =
         e?.data?.error?.message || e?.message || e?.toString?.() || "";
-      // If Groq rejects the tier, retry once without any tier
+
+      // If Groq rejects the tier, retry the whole request once without any tier (also rate-limit aware)
       if (msg.includes("service_tier")) {
-        const result = await run(false);
+        const result = await runWithRateLimit(false);
         return result.toTextStreamResponse();
       }
       throw e;
@@ -83,6 +128,24 @@ export async function POST(req: Request) {
   } catch (err: any) {
     return json({ error: err?.message || "Failed to summarize" }, 500);
   }
+}
+
+/* ========== Helpers ========== */
+
+function parseRetryAfter(v: any): number | null {
+  if (!v) return null;
+  // Groq docs: retry-after is in seconds when 429 is returned
+  const n = Number(String(v).trim());
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n * 1000)) : null;
+}
+
+function jitter(ms: number): number {
+  const d = Math.floor(ms * 0.2);
+  return ms + Math.floor(Math.random() * d) - Math.floor(d / 2);
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function json(body: unknown, status = 200, headers?: Record<string, string>) {

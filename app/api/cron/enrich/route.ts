@@ -33,7 +33,7 @@ const DEFAULT_RUN_PWC = true;
 
 // LLM model (Groq via AI SDK)
 const EXTRACT_MODEL = process.env.GROQ_EXTRACT_MODEL || "llama-3.1-70b";
-const SERVICE_TIER: "flex" | "on_demand" | "auto" = "flex";
+const ENV_TIER = process.env.GROQ_SERVICE_TIER?.trim(); // optional; omit if not set
 
 export async function POST(req: Request) {
   const startedAt = new Date();
@@ -130,31 +130,90 @@ export async function POST(req: Request) {
 
         if (doExtract) {
           try {
-            const { object } = await generateObject({
-              model: groq(EXTRACT_MODEL),
-              temperature: 0.1,
-              maxOutputTokens: 900,
-              providerOptions: {
-                groq: { structuredOutputs: true, serviceTier: SERVICE_TIER },
-              },
-              schema: ExtractedLLM,
-              messages: [
-                {
-                  role: "system",
-                  content: [
-                    "Extract ONLY from the provided title and abstract. Do not speculate.",
-                    "Return fields using the exact JSON schema.",
-                    "- If a detail is absent, return empty array or null as appropriate; never fabricate.",
-                    "Never assert SOTA unless explicitly stated.",
-                  ].join("\n"),
-                },
-                {
-                  role: "user",
-                  content: `Title: ${p.title}\n\nAbstract:\n${p.abstract}`,
-                },
-              ],
-            });
-            extracted = object;
+            const callOnce = async (withTier: boolean) => {
+              const { object } = await generateObject({
+                model: groq(EXTRACT_MODEL),
+                temperature: 0.1,
+                maxOutputTokens: 900,
+                ...(withTier && ENV_TIER
+                  ? {
+                      providerOptions: {
+                        groq: { structuredOutputs: true, serviceTier: ENV_TIER },
+                      },
+                    }
+                  : { providerOptions: { groq: { structuredOutputs: true } } }),
+                schema: ExtractedLLM,
+                messages: [
+                  {
+                    role: "system",
+                    content: [
+                      "Extract ONLY from the provided title and abstract. Do not speculate.",
+                      "Return fields using the exact JSON schema.",
+                      "- If a detail is absent, return empty array or null as appropriate; never fabricate.",
+                      "Never assert SOTA unless explicitly stated.",
+                    ].join("\n"),
+                  },
+                  {
+                    role: "user",
+                    content: `Title: ${p.title}\n\nAbstract:\n${p.abstract}`,
+                  },
+                ],
+              });
+              return object;
+            };
+
+            const runWithRateLimit = async (withTier: boolean) => {
+              const attempts = 3;
+              const base = 750; // ms backoff base
+              let lastErr: any = null;
+              for (let i = 0; i < attempts; i++) {
+                try {
+                  return await callOnce(withTier);
+                } catch (e: any) {
+                  lastErr = e;
+                  const status = e?.statusCode ?? e?.status;
+                  const headers = e?.responseHeaders || {};
+                  const msg =
+                    e?.data?.error?.message || e?.message || e?.toString?.() || "";
+
+                  // Rate limit → respect retry-after (seconds)
+                  if (status === 429) {
+                    const ra = parseRetryAfter(headers["retry-after"]);
+                    const wait = ra ?? jitter(base * Math.pow(2, i));
+                    await sleep(wait);
+                    continue;
+                  }
+
+                  // Transient 5xx → exponential backoff + jitter
+                  if (status === 500 || status === 502 || status === 503 || status === 504) {
+                    await sleep(jitter(base * Math.pow(2, i)));
+                    continue;
+                  }
+
+                  // Service tier not allowed → bubble up so we can retry without tier
+                  if (msg.includes("service_tier")) {
+                    throw e;
+                  }
+
+                  // Non-retryable
+                  break;
+                }
+              }
+              throw lastErr;
+            };
+
+            try {
+              extracted = await runWithRateLimit(Boolean(ENV_TIER));
+            } catch (e: any) {
+              // If tier caused rejection, retry once without tier
+              const msg =
+                e?.data?.error?.message || e?.message || e?.toString?.() || "";
+              if (msg.includes("service_tier")) {
+                extracted = await runWithRateLimit(false);
+              } else {
+                throw e;
+              }
+            }
           } catch {
             extracted = null; // skip extraction but keep enrichment pipeline running
           }
@@ -204,7 +263,6 @@ export async function POST(req: Request) {
           });
         }
 
-        // 7) Upsert PwC mapping row (ignore conflicts)
         // 7) Upsert PwC mapping row (idempotent)
         if (pwc) {
           await db
@@ -223,7 +281,7 @@ export async function POST(req: Request) {
               updatedAt: new Date(),
             })
             .onConflictDoUpdate({
-              target: schema.pwcLinks.paperId, // ensure you have a unique index on paperId
+              target: schema.pwcLinks.paperId,
               set: {
                 found: Boolean(pwc.found),
                 paperUrl: pwc.paperUrl ?? null,
@@ -483,4 +541,17 @@ function asBool(v: string | null, def: boolean): boolean {
 
 function dedupe<T>(arr: T[]): T[] {
   return Array.from(new Set(arr));
+}
+
+function parseRetryAfter(v: any): number | null {
+  if (!v) return null;
+  const n = Number(String(v).trim()); // seconds per Groq docs
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n * 1000)) : null;
+}
+function jitter(ms: number): number {
+  const d = Math.floor(ms * 0.2);
+  return ms + Math.floor(Math.random() * d) - Math.floor(d / 2);
+}
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
