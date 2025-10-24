@@ -1,15 +1,8 @@
+
+// components/layout/user-menu.tsx
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
-import { usePathname, useSearchParams, useRouter } from "next/navigation";
-import {
-  LogIn,
-  LogOut,
-  Settings,
-  User as UserIcon,
-  Loader2,
-} from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -19,9 +12,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { getUserInitials, getUserDisplayName } from "@/lib/utils/user";
+import { getUserDisplayName, getUserInitials } from "@/lib/utils/user";
 import type { User } from "@/types/auth";
+import {
+  Loader2,
+  LogIn,
+  LogOut,
+  Settings,
+  User as UserIcon,
+} from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useMemo, useState } from "react";
 
 interface UserMenuProps {
   user: User | null;
@@ -65,7 +66,9 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
 
   const displayName = getUserDisplayName(user);
   const avatarAlt = user ? `${displayName}'s avatar` : "User avatar";
-  const showSpinnerInAvatar = signingOut || (!user && isLoading);
+
+  // UX: Only show spinner while actually signing out (not during initial auth load)
+  const showSpinnerInAvatar = signingOut;
 
   return (
     <DropdownMenu>
@@ -74,10 +77,10 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
           variant="ghost"
           size="sm"
           className="px-2 focus-visible:ring-2 focus-visible:ring-primary"
-          // Let signed-in users open menu even if some background load is happening
           disabled={signingOut}
           aria-label={user ? `Account menu for ${displayName}` : "Account menu"}
-          aria-busy={isLoading || signingOut}
+          // aria-busy only when signing out to avoid "spinning account" UX when signed-out
+          aria-busy={signingOut}
         >
           <div className="flex items-center gap-2">
             <Avatar className="h-6 w-6">
@@ -99,7 +102,7 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
               )}
             </Avatar>
             <span className="hidden sm:inline text-sm max-w-[160px] truncate">
-              {!user && isLoading ? "Loading…" : displayName}
+              {user ? displayName : "Sign in"}
             </span>
           </div>
         </Button>
@@ -116,12 +119,16 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
                 </div>
               ) : null}
             </DropdownMenuLabel>
+
             <DropdownMenuSeparator />
+
             <DropdownMenuItem onClick={handleSettings}>
               <Settings className="mr-2 h-4 w-4" aria-hidden="true" />
               Settings
             </DropdownMenuItem>
+
             <DropdownMenuSeparator />
+
             <DropdownMenuItem
               onClick={handleSignOut}
               disabled={signingOut}
@@ -146,10 +153,11 @@ export function UserMenu({ user, isLoading, onSignOut }: UserMenuProps) {
               <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />
               Sign in
             </DropdownMenuItem>
-            <DropdownMenuSeparator />
+            {/* If you don't want guests to see Feed at all, remove the option below */}
+            {/* <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
               <Link href="/feed">Continue without an account</Link>
-            </DropdownMenuItem>
+            </DropdownMenuItem> */}
           </>
         )}
       </DropdownMenuContent>
