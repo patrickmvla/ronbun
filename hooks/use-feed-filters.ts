@@ -5,25 +5,33 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { ViewTab, FeedFilters } from "@/types/feed";
 import { parseCategoriesFromURL, parseViewFromURL } from "@/lib/utils/feed-filters";
 import { FEED_CONFIG } from "@/config/feed";
+import { useSearch } from "@/stores/useSearch";
 
 export function useFeedFilters() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { query: searchQuery, setQuery: setSearchQuery, clearQuery } = useSearch();
 
   // Parse initial state from URL
   const initialView = parseViewFromURL(searchParams.get("view"));
   const initialCategories =
     parseCategoriesFromURL(searchParams.get("cats")) ||
     Array.from(FEED_CONFIG.defaultCategories);
-  const initialQuery = searchParams.get("q")?.trim() || "";
-  const initialWatchlist = searchParams.get("wl") || null; // This will be string | null
+  const urlQuery = searchParams.get("q")?.trim() || "";
+  const initialWatchlist = searchParams.get("wl") || null;
 
   // Local state
   const [view, setView] = useState<ViewTab>(initialView);
   const [categories, setCategories] = useState<string[]>(initialCategories);
-  const [query] = useState(initialQuery);
-  const [watchlist] = useState<string | null>(initialWatchlist); // ✅ Explicitly type as string | null
+  const [watchlist] = useState<string | null>(initialWatchlist);
+
+  // Sync URL query with store on mount and URL changes
+  useEffect(() => {
+    if (urlQuery !== searchQuery) {
+      setSearchQuery(urlQuery);
+    }
+  }, [urlQuery, searchQuery, setSearchQuery]);
 
   // Update URL when filters change
   const updateURL = useCallback(
@@ -61,12 +69,14 @@ export function useFeedFilters() {
   const resetFilters = useCallback(() => {
     setView(FEED_CONFIG.defaultView);
     setCategories(Array.from(FEED_CONFIG.defaultCategories));
-  }, []);
+    clearQuery();
+    router.push("/feed");
+  }, [clearQuery, router]);
 
   const filters: FeedFilters = {
     view,
     categories,
-    query: query || undefined,
+    query: searchQuery || undefined,
     watchlist,
   };
 

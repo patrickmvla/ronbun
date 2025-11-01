@@ -6,36 +6,38 @@ import { Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NAVBAR_CONFIG } from "@/config/navigation";
+import { useSearch } from "@/stores/useSearch";
 
 interface SearchBarProps {
   className?: string;
 }
 
 export function SearchBar({ className }: SearchBarProps) {
-  const [query, setQuery] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [localQuery, setLocalQuery] = useState("");
+  const { setQuery, setIsSearching } = useSearch();
   const router = useRouter();
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      
-      const trimmedQuery = query.trim();
+
+      const trimmedQuery = localQuery.trim();
       if (!trimmedQuery) return;
 
-      setIsSubmitting(true);
-      
+      setIsSearching(true);
+
       try {
+        // Update global search state
+        setQuery(trimmedQuery);
+        // Navigate to feed with search query
         router.push(`/feed?q=${encodeURIComponent(trimmedQuery)}`);
-        // Optionally clear after navigation
-        // setQuery("");
       } catch (error) {
         console.error("Search navigation error:", error);
       } finally {
-        setIsSubmitting(false);
+        setIsSearching(false);
       }
     },
-    [query, router]
+    [localQuery, router, setQuery, setIsSearching]
   );
 
   return (
@@ -52,21 +54,20 @@ export function SearchBar({ className }: SearchBarProps) {
           <Input
             id="navbar-search"
             type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={localQuery}
+            onChange={(e) => setLocalQuery(e.target.value)}
             placeholder={NAVBAR_CONFIG.searchPlaceholder}
             maxLength={NAVBAR_CONFIG.maxSearchLength}
-            disabled={isSubmitting}
             className="pl-8"
             aria-label="Search papers, authors, and benchmarks"
           />
         </div>
         <Button
           type="submit"
-          disabled={!query.trim() || isSubmitting}
+          disabled={!localQuery.trim()}
           className="btn-primary"
         >
-          {isSubmitting ? "Searching..." : "Search"}
+          Search
         </Button>
       </div>
     </form>

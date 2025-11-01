@@ -29,6 +29,8 @@ export type UseInfinitePapersOptions = {
   // Feed controls
   view?: "today" | "week" | "for-you"; // forwarded to DB feed
   codeOnly?: boolean; // DB: only papers with code
+  hasWeights?: boolean; // DB: only papers with model weights
+  withBenchmarks?: boolean; // DB: only papers with benchmarks
 
   // Pagination/sorting
   pageSize?: number; // page size
@@ -37,7 +39,6 @@ export type UseInfinitePapersOptions = {
 
   // React Query
   enabled?: boolean;
-  staleTime?: number;
 };
 
 /** Helper to build a safe arXiv-style query string from categories + search. */
@@ -64,11 +65,12 @@ export function useInfinitePapers({
   search,
   view,
   codeOnly = false,
+  hasWeights = false,
+  withBenchmarks = false,
   pageSize = 25,
   sortBy = "submittedDate",
   sortOrder = "descending",
   enabled = true,
-  staleTime = 30_000,
 }: UseInfinitePapersOptions) {
   const query = (q ?? buildArxivQuery(categories, search)).trim();
 
@@ -82,9 +84,13 @@ export function useInfinitePapers({
   const source = hasTextSearch ? "arxiv" : "db";
 
   return useInfiniteQuery<{ items: PaperListItem[]; nextCursor?: string | null }, Error>({
-    queryKey: ["papers", { query, source, catList, view, codeOnly, pageSize, sortBy, sortOrder }],
+    queryKey: ["papers", { query, source, catList, view, codeOnly, hasWeights, withBenchmarks, pageSize, sortBy, sortOrder }],
     enabled: Boolean(query) && enabled,
-    staleTime,
+    staleTime: 5 * 60 * 1000, // 5 mins - papers don't change rapidly
+    gcTime: 10 * 60 * 1000, // 10 mins in cache
+    refetchOnWindowFocus: false, // Don't refetch on tab switch
+    refetchOnMount: false, // Use cached data if available
+    refetchOnReconnect: false,
     initialPageParam: source === "arxiv" ? 0 : undefined,
     queryFn: async ({ pageParam }) => {
       if (source === "db") {
@@ -94,11 +100,13 @@ export function useInfinitePapers({
         if (catList.length) params.set("categories", catList.join(","));
         if (view) params.set("view", view);
         if (codeOnly) params.set("code", "1");
+        if (hasWeights) params.set("weights", "1");
+        if (withBenchmarks) params.set("benchmarks", "1");
         if (pageParam) params.set("cursor", String(pageParam));
         const res = await fetch(`/api/papers?${params.toString()}`, {
           method: "GET",
           headers: { "Content-Type": "application/json" },
-          next: { revalidate: 0 },
+          next: { revalidate: 60 }, // Cache for 60s
         });
         if (!res.ok) {
           const msg = await safeText(res);
@@ -139,7 +147,7 @@ export function useInfinitePapers({
       const res = await fetch(url, {
         method: "GET",
         headers: { "Content-Type": "application/json" },
-        next: { revalidate: 0 },
+        next: { revalidate: 60 }, // Cache for 60s
       });
       if (!res.ok) {
         const msg = await safeText(res);

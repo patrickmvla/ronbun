@@ -1,8 +1,8 @@
 // app/(app)/feed/page.tsx
 "use client";
 
-import { useMemo, Suspense } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, Suspense, useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Separator } from "@/components/ui/separator";
 import { FeedHeader } from "@/components/feed/feed-header";
 import { FeedControls } from "@/components/feed/feed-controls";
@@ -18,6 +18,7 @@ export const dynamic = "force-dynamic";
 
 function FeedPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // Manage filters and URL state
   const {
@@ -28,6 +29,37 @@ function FeedPageInner() {
     toggleCategory,
     resetFilters,
   } = useFeedFilters();
+
+  // Advanced filters state (from URL)
+  const [codeOnly, setCodeOnly] = useState(searchParams.get("code") === "1");
+  const [hasWeights, setHasWeights] = useState(searchParams.get("weights") === "1");
+  const [withBenchmarks, setWithBenchmarks] = useState(searchParams.get("benchmarks") === "1");
+
+  // Sync advanced filters to URL
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+
+    // Update advanced filter params
+    if (codeOnly) {
+      params.set("code", "1");
+    } else {
+      params.delete("code");
+    }
+
+    if (hasWeights) {
+      params.set("weights", "1");
+    } else {
+      params.delete("weights");
+    }
+
+    if (withBenchmarks) {
+      params.set("benchmarks", "1");
+    } else {
+      params.delete("benchmarks");
+    }
+
+    router.replace(`/feed?${params.toString()}`, { scroll: false });
+  }, [codeOnly, hasWeights, withBenchmarks, router, searchParams]);
 
   // Build arXiv query
   const arxivQuery = useMemo(
@@ -45,17 +77,24 @@ function FeedPageInner() {
     error,
   } = useInfinitePapers({
     q: arxivQuery,
+    view, // ✅ Pass view to server for DB-level filtering
+    codeOnly,
+    hasWeights,
+    withBenchmarks,
     pageSize: FEED_CONFIG.pageSize,
     sortBy: FEED_CONFIG.sortBy,
     sortOrder: FEED_CONFIG.sortOrder,
     enabled: arxivQuery.length > 0 || categories.length > 0,
   });
 
-  // Flatten pages and apply time filter
+  // Flatten pages and apply client-side filter as fallback
+  // (DB source pre-filters, but arXiv source needs client-side filtering)
   const papers = useMemo(() => {
     const allPapers = data?.pages.flatMap((page) => page.items) ?? [];
-    return applyViewFilter(allPapers, view);
-  }, [data, view]);
+    // Only filter if we have a search query (arXiv source)
+    const hasTextSearch = Boolean(filters.query?.trim());
+    return hasTextSearch ? applyViewFilter(allPapers, view) : allPapers;
+  }, [data, view, filters.query]);
 
   // Setup infinite scroll
   const { sentinelRef } = useInfiniteScroll({
@@ -78,6 +117,12 @@ function FeedPageInner() {
           onViewChange={setView}
           selectedCategories={categories}
           onCategoryToggle={toggleCategory}
+          codeOnly={codeOnly}
+          hasWeights={hasWeights}
+          withBenchmarks={withBenchmarks}
+          onCodeOnlyChange={setCodeOnly}
+          onHasWeightsChange={setHasWeights}
+          onWithBenchmarksChange={setWithBenchmarks}
         />
       </div>
 

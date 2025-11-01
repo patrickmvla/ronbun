@@ -3,6 +3,9 @@
 import { NextResponse } from "next/server";
 import { db, schema } from "@/lib/drizzle/db";
 import { desc, eq, inArray } from "drizzle-orm";
+import { getAuth } from "@/lib/auth";
+import { computePaperScore } from "@/lib/scoring";
+import { watchlistsToScoringInput } from "@/lib/utils/watchlist-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,6 +48,10 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
 
+    // Try to get auth (optional - feed works without login)
+    const auth = await getAuth().catch(() => null);
+    const userId = auth?.user?.id ?? null;
+
     // Optional view; default = no time filter
     const viewParam = url.searchParams.get("view");
     const view: "today" | "week" | "for-you" | null =
@@ -58,8 +65,19 @@ export async function GET(req: Request) {
       .filter(Boolean);
 
     const codeOnly = asBool(url.searchParams.get("code"), false);
+    const hasWeights = asBool(url.searchParams.get("weights"), false);
+    const withBenchmarks = asBool(url.searchParams.get("benchmarks"), false);
     const limit = clampInt(url.searchParams.get("limit"), 25, 1, 50);
     const cursor = url.searchParams.get("cursor") || null; // format: "{tsIso}_{uuid}"
+
+    // Fetch user watchlists if logged in
+    let watchlists: any[] = [];
+    if (userId) {
+      watchlists = await db
+        .select()
+        .from(schema.watchlists)
+        .where(eq(schema.watchlists.userId, userId));
+    }
 
     // Time window based on view; null = no time filter
     const since: Date | null =
@@ -150,17 +168,75 @@ export async function GET(req: Request) {
       .orderBy(desc(schema.pwcLinks.updatedAt));
     const pwcByPaper = pickLatestBy(pwcRows, "paperId", "updatedAt");
 
-    // Optional: code-only filter based on enrich/structured codeUrls
-    const filteredIds = codeOnly
-      ? paperIds.filter((pid) => {
-          const e = enrichByPaper.get(pid);
-          const st = structuredByPaper.get(pid);
-          const codes = new Set([...(e?.codeUrls ?? []), ...(st?.codeUrls ?? [])]);
-          return codes.size > 0;
-        })
-      : paperIds;
+    // Apply filters based on enrichment data
+    const filteredIds = paperIds.filter((pid) => {
+      const e = enrichByPaper.get(pid);
+      const st = structuredByPaper.get(pid);
 
-    const filteredPapers = paperRows.filter((p) => filteredIds.includes(p.id));
+      // Code filter
+      if (codeOnly) {
+        const codes = new Set([...(e?.codeUrls ?? []), ...(st?.codeUrls ?? [])]);
+        if (codes.size === 0) return false;
+      }
+
+      // Weights filter
+      if (hasWeights && !e?.hasWeights) {
+        return false;
+      }
+
+      // Benchmarks filter
+      if (withBenchmarks) {
+        const benchmarks = st?.benchmarks ?? [];
+        if (!Array.isArray(benchmarks) || benchmarks.length === 0) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    let filteredPapers = paperRows.filter((p) => filteredIds.includes(p.id));
+
+    // For "for-you" view with watchlists, recompute scores live
+    if (view === "for-you" && watchlists.length > 0) {
+      const watchlistInputs = watchlistsToScoringInput(watchlists);
+      const scoredPapers = filteredPapers.map((p) => {
+        const enrich = enrichByPaper.get(p.id);
+        const structured = structuredByPaper.get(p.id);
+
+        // Compute fresh score with user watchlists
+        const scoreResult = computePaperScore(
+          {
+            arxivId: p.arxivIdBase,
+            title: p.title,
+            abstract: p.abstract,
+            authors: authorsByPaper.get(p.id) ?? [],
+            categories: p.categories ?? [],
+            publishedAt: p.publishedAt as any,
+            codeUrls: [...(enrich?.codeUrls ?? []), ...(structured?.codeUrls ?? [])],
+            hasWeights: enrich?.hasWeights ?? false,
+            repoStars: (enrich?.repoStars as number | null) ?? null,
+            benchmarks: structured?.benchmarks ?? [],
+          },
+          watchlistInputs
+        );
+
+        return { paper: p, score: scoreResult.global };
+      });
+
+      // Sort by newly computed score
+      scoredPapers.sort((a, b) => b.score - a.score);
+      filteredPapers = scoredPapers.map((sp) => sp.paper);
+    } else if (view === "for-you") {
+      // Fallback to DB scores if no watchlists
+      filteredPapers = filteredPapers.sort((a, b) => {
+        const scoreA = scoreByPaper.get(a.id);
+        const scoreB = scoreByPaper.get(b.id);
+        const globalA = Number(scoreA?.globalScore ?? 0);
+        const globalB = Number(scoreB?.globalScore ?? 0);
+        return globalB - globalA; // descending
+      });
+    }
 
     const items: PaperListItem[] = filteredPapers.map((p) => {
       const authors = authorsByPaper.get(p.id) ?? [];

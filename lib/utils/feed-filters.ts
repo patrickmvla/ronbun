@@ -79,6 +79,6 @@ export function parseViewFromURL(viewParam: string | null): ViewTab {
   if (viewParam && (VALID_VIEWS as readonly string[]).includes(viewParam)) {
     return viewParam as ViewTab;
   }
-  // Default to "week" for a fuller feed on first load
-  return "week";
+  // Default to "today" to match FEED_CONFIG
+  return "today";
 }

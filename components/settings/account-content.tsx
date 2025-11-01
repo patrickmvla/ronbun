@@ -239,30 +239,28 @@ export default function AccountSettingsContent() {
         );
       } catch {}
 
-      // Persist to Supabase (RLS-friendly)
-      if (supabase) {
-        const { data: sData } = await supabase.auth.getSession();
-        const uid = sData?.session?.user?.id ?? null;
-        if (uid) {
-          const payload = {
-            id: uid,
-            display_name: values.displayName,
-            preferences: {
-              categories: values.categories,
-              defaultView: values.defaultView,
-              explainerLevel: values.explainerLevel,
-              digestEnabled: values.digestEnabled,
-              digestDay: values.digestDay,
-              digestTime: values.digestTime,
-              density: values.density,
-              timezone: tz,
-            },
-          };
-          const { error } = await supabase
-            .from("profiles")
-            .upsert(payload, { onConflict: "id" });
-          if (error) throw new Error(error.message);
-        }
+      // Persist via API
+      const res = await fetch("/api/user/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          displayName: values.displayName,
+          preferences: {
+            categories: values.categories,
+            defaultView: values.defaultView,
+            explainerLevel: values.explainerLevel,
+            digestEnabled: values.digestEnabled,
+            digestDay: values.digestDay,
+            digestTime: values.digestTime,
+            density: values.density,
+            timezone: tz,
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to save settings");
       }
 
       setSavedAt(Date.now());
@@ -534,10 +532,34 @@ export default function AccountSettingsContent() {
                 variant="outline"
                 className="gap-2 border-destructive/50 text-destructive hover:bg-destructive/10"
                 type="button"
-                onClick={() => {
-                  const ok = confirm("Are you sure you want to delete your account? This cannot be undone.");
-                  if (ok) {
-                    alert("Account deletion is mocked in MVP.");
+                onClick={async () => {
+                  const ok = confirm(
+                    "Are you sure you want to delete your account? This will permanently delete all your data including watchlists, saves, and preferences. This action cannot be undone."
+                  );
+                  if (!ok) return;
+
+                  const doubleConfirm = confirm("Type DELETE to confirm (just click OK to proceed)");
+                  if (!doubleConfirm) return;
+
+                  try {
+                    setSaveBusy(true);
+                    const res = await fetch("/api/user/profile", {
+                      method: "DELETE",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ confirm: true }),
+                    });
+
+                    const data = await res.json();
+                    if (!res.ok) {
+                      throw new Error(data?.error || "Failed to delete account");
+                    }
+
+                    alert(data.message || "Account deleted successfully");
+                    await signOut();
+                  } catch (e: any) {
+                    alert(e?.message || "Failed to delete account");
+                  } finally {
+                    setSaveBusy(false);
                   }
                 }}
               >

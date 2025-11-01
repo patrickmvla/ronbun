@@ -10,6 +10,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { usePrefs } from "@/stores/usePrefs";
 
 interface FeedContentProps {
   papers: PaperListItem[];
@@ -34,6 +35,8 @@ export function FeedContent({
   onReset,
   sentinelRef,
 }: FeedContentProps) {
+  const { density } = usePrefs();
+  const isCompact = density === "compact";
   if (isLoading) {
     return (
       <div className="grid gap-3">
@@ -85,7 +88,7 @@ export function FeedContent({
 
   return (
     <>
-      <div className="grid gap-3" aria-busy={isLoadingMore || undefined}>
+      <div className={`grid ${isCompact ? "gap-2" : "gap-3"}`} aria-busy={isLoadingMore || undefined}>
         {papers.map((paper) => (
           <PaperRow
             key={paper.arxivId}
@@ -101,6 +104,7 @@ export function FeedContent({
               // pass enrichment so badges/buttons render
               codeUrls: paper.codeUrls ?? [],
             }}
+            compact={isCompact}
           />
         ))}
 

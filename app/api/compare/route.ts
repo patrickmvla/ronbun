@@ -3,6 +3,8 @@
 import { NextResponse } from "next/server";
 import { db, schema } from "@/lib/drizzle/db";
 import { inArray, eq, desc, asc } from "drizzle-orm";
+import { getAuth } from "@/lib/auth";
+import { paperMatchesWatchlists } from "@/lib/utils/watchlist-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,6 +38,9 @@ type CompareItem = {
   // Score + links
   score?: { global: number; components?: ScoreComponents | null };
   links?: { abs: string | null; pwc: string | null; repo: string | null };
+
+  // Watchlist matches
+  matchedWatchlists?: Array<{ id: string; name: string; type: string }>;
 };
 
 const MAX_IDS = 2;
@@ -44,6 +49,10 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const idsParam = (url.searchParams.get("ids") || "").trim();
+
+    // Try to get auth (optional)
+    const auth = await getAuth().catch(() => null);
+    const userId = auth?.user?.id ?? null;
 
     if (!idsParam) {
       return json({ error: "Missing ids (?ids=2501.10000,2501.10011)" }, 400);
@@ -62,6 +71,15 @@ export async function GET(req: Request) {
 
     if (requested.length === 0) {
       return json({ error: "Provide 1–2 valid arXiv IDs" }, 400);
+    }
+
+    // Fetch user watchlists if logged in
+    let watchlists: any[] = [];
+    if (userId) {
+      watchlists = await db
+        .select()
+        .from(schema.watchlists)
+        .where(eq(schema.watchlists.userId, userId));
     }
 
     // Query using unique IDs but keep requested order for payload
@@ -147,6 +165,29 @@ export async function GET(req: Request) {
 
       const codeUrls = dedupe([...(enrich?.codeUrls ?? []), ...(structured?.codeUrls ?? [])]);
 
+      // Check watchlist matches
+      const matchedWatchlistIds = watchlists.length > 0
+        ? paperMatchesWatchlists(
+            {
+              title: p.title,
+              abstract: p.abstract,
+              authors,
+              categories: p.categories ?? [],
+              benchmarks: structured?.benchmarks ?? [],
+            },
+            watchlists
+          )
+        : [];
+
+      const matchedWatchlists = matchedWatchlistIds.map((id) => {
+        const wl = watchlists.find((w: any) => w.id === id);
+        return {
+          id: wl?.id ?? id,
+          name: wl?.name ?? "Unknown",
+          type: wl?.type ?? "keyword",
+        };
+      });
+
       return {
         arxivId: p.arxivIdBase,
         found: true,
@@ -188,6 +229,8 @@ export async function GET(req: Request) {
           pwc: pwc?.paperUrl ?? null,
           repo: enrich?.primaryRepo ?? pwc?.repoUrl ?? null,
         },
+
+        matchedWatchlists: matchedWatchlists.length > 0 ? matchedWatchlists : undefined,
       };
     });
 
