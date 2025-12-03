@@ -2,7 +2,7 @@
 // hooks/useInfinitePapers.ts
 "use client";
 
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 
 /** Minimal paper shape for lists/feeds (now includes code fields). */
 export type PaperListItem = {
@@ -91,6 +91,8 @@ export function useInfinitePapers({
     refetchOnWindowFocus: false, // Don't refetch on tab switch
     refetchOnMount: false, // Use cached data if available
     refetchOnReconnect: false,
+    // Keep showing previous data while fetching new data (no loading flash)
+    placeholderData: keepPreviousData,
     initialPageParam: source === "arxiv" ? 0 : undefined,
     queryFn: async ({ pageParam }) => {
       if (source === "db") {
@@ -231,4 +233,61 @@ function extractCategoriesFromAqs(q: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(q))) out.add(m[1]);
   return Array.from(out);
+}
+
+/* ========== Prefetching ========== */
+
+type PrefetchOptions = {
+  categories: string[];
+  view: "today" | "week" | "for-you";
+  pageSize?: number;
+};
+
+/**
+ * Hook to prefetch papers for a given view.
+ * Call this to warm the cache before the user switches views.
+ */
+export function usePrefetchPapers() {
+  const queryClient = useQueryClient();
+
+  return async ({ categories, view, pageSize = 25 }: PrefetchOptions) => {
+    const query = buildArxivQuery(categories);
+    if (!query) return;
+
+    const queryKey = [
+      "papers",
+      {
+        query,
+        source: "db",
+        catList: categories,
+        view,
+        codeOnly: false,
+        hasWeights: false,
+        withBenchmarks: false,
+        pageSize,
+        sortBy: "submittedDate",
+        sortOrder: "descending",
+      },
+    ];
+
+    // Only prefetch if not already in cache
+    const existing = queryClient.getQueryData(queryKey);
+    if (existing) return;
+
+    await queryClient.prefetchInfiniteQuery({
+      queryKey,
+      queryFn: async () => {
+        const params = new URLSearchParams();
+        params.set("limit", String(pageSize));
+        params.set("categories", categories.join(","));
+        params.set("view", view);
+
+        const res = await fetch(`/api/papers?${params.toString()}`);
+        if (!res.ok) throw new Error("Prefetch failed");
+        return res.json();
+      },
+      initialPageParam: undefined,
+      staleTime: 5 * 60 * 1000,
+    });
+  };
 }

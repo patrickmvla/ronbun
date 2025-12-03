@@ -4,8 +4,10 @@ import { NextResponse } from "next/server";
 import { db, schema } from "@/lib/drizzle/db";
 import { desc, eq, inArray } from "drizzle-orm";
 import { getAuth } from "@/lib/auth";
-import { computePaperScore } from "@/lib/scoring";
+import {  computePersonalizedScore } from "@/lib/scoring";
 import { watchlistsToScoringInput } from "@/lib/utils/watchlist-helpers";
+import { getUserViewHistory, loadUserAffinities } from "@/lib/implicit-interest";
+import { getCachedUserScores, cacheUserScores, getWatchlistVersion } from "@/lib/user-scores-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -84,7 +86,7 @@ export async function GET(req: Request) {
       view === "week"
         ? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
         : view === "today"
-        ? new Date(new Date().setHours(0, 0, 0, 0))
+        ? new Date(Date.now() - 24 * 60 * 60 * 1000) // last 24 hours
         : null;
 
     // Fetch base rows (typed where; no builder reassignments)
@@ -197,16 +199,42 @@ export async function GET(req: Request) {
 
     let filteredPapers = paperRows.filter((p) => filteredIds.includes(p.id));
 
-    // For "for-you" view with watchlists, recompute scores live
-    if (view === "for-you" && watchlists.length > 0) {
+    // For "for-you" view: use personalized scoring if user is logged in
+    if (view === "for-you" && userId) {
+      // Load personalization data in parallel
+      const [viewHistory, affinities, watchlistVersion] = await Promise.all([
+        getUserViewHistory(userId, { lookbackDays: 30, limit: 200 }),
+        loadUserAffinities(userId),
+        getWatchlistVersion(userId),
+      ]);
+
+      // Check for cached scores
+      const cachedScores = await getCachedUserScores(
+        userId,
+        filteredPapers.map((p) => p.id),
+        watchlistVersion
+      );
+
+      // Compute personalized scores (use cache when available)
       const watchlistInputs = watchlistsToScoringInput(watchlists);
-      const scoredPapers = filteredPapers.map((p) => {
+      const scoredPapers: Array<{ paper: (typeof filteredPapers)[0]; score: number }> = [];
+      const toCache: Array<{ paperId: string; score: number }> = [];
+
+      for (const p of filteredPapers) {
+        // Use cached score if available
+        const cached = cachedScores.get(p.id);
+        if (cached !== undefined) {
+          scoredPapers.push({ paper: p, score: cached });
+          continue;
+        }
+
+        // Compute fresh personalized score
         const enrich = enrichByPaper.get(p.id);
         const structured = structuredByPaper.get(p.id);
 
-        // Compute fresh score with user watchlists
-        const scoreResult = computePaperScore(
+        const scoreResult = computePersonalizedScore(
           {
+            paperId: p.id,
             arxivId: p.arxivIdBase,
             title: p.title,
             abstract: p.abstract,
@@ -217,18 +245,29 @@ export async function GET(req: Request) {
             hasWeights: enrich?.hasWeights ?? false,
             repoStars: (enrich?.repoStars as number | null) ?? null,
             benchmarks: structured?.benchmarks ?? [],
+            tasks: structured?.tasks ?? [],
           },
-          watchlistInputs
+          watchlistInputs,
+          {
+            viewHistory,
+            affinities: affinities ?? undefined,
+          }
         );
 
-        return { paper: p, score: scoreResult.global };
-      });
+        scoredPapers.push({ paper: p, score: scoreResult.personalized });
+        toCache.push({ paperId: p.id, score: scoreResult.personalized });
+      }
 
-      // Sort by newly computed score
+      // Sort by personalized score (descending)
       scoredPapers.sort((a, b) => b.score - a.score);
       filteredPapers = scoredPapers.map((sp) => sp.paper);
+
+      // Cache computed scores asynchronously (fire and forget)
+      if (toCache.length > 0) {
+        cacheUserScores(userId, toCache, watchlistVersion).catch(() => {});
+      }
     } else if (view === "for-you") {
-      // Fallback to DB scores if no watchlists
+      // Fallback to DB scores if not logged in
       filteredPapers = filteredPapers.sort((a, b) => {
         const scoreA = scoreByPaper.get(a.id);
         const scoreB = scoreByPaper.get(b.id);

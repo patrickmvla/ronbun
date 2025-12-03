@@ -6,6 +6,7 @@ import { db, schema } from "@/lib/drizzle/db";
 import { requireAuth } from "@/lib/auth";
 import { z } from "zod";
 import { WatchlistSchema } from "@/lib/zod";
+import { incrementWatchlistVersion } from "@/lib/user-scores-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,6 +70,9 @@ export async function POST(req: Request) {
       })
       .returning();
 
+    // Increment watchlist version to invalidate cached scores
+    await incrementWatchlistVersion(user.id);
+
     return json({ item: toClient(inserted) }, 201);
   } catch (err: any) {
     return handleAuthOrError(err);
@@ -108,6 +112,9 @@ export async function PATCH(req: Request) {
       .where(eq(schema.watchlists.id, id))
       .returning();
 
+    // Increment watchlist version to invalidate cached scores
+    await incrementWatchlistVersion(user.id);
+
     return json({ item: toClient(updated) });
   } catch (err: any) {
     return handleAuthOrError(err);
@@ -141,6 +148,10 @@ export async function DELETE(req: Request) {
     if (!owner.length) return json({ error: "Not found" }, 404);
 
     await db.delete(schema.watchlists).where(eq(schema.watchlists.id, parsed.data.id));
+
+    // Increment watchlist version to invalidate cached scores
+    await incrementWatchlistVersion(user.id);
+
     return json({ ok: true });
   } catch (err: any) {
     return handleAuthOrError(err);

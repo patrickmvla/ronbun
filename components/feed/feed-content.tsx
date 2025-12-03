@@ -1,4 +1,4 @@
-import { ArrowRight, Loader2, CircleAlert, SearchX } from "lucide-react";
+import { ArrowRight, Loader2, CircleAlert, SearchX, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PaperRow, PaperRowSkeleton } from "@/components/papers/paper-row";
 import type { PaperListItem } from "@/hooks/useInfinitePapers";
@@ -16,6 +16,7 @@ interface FeedContentProps {
   papers: PaperListItem[];
   isLoading: boolean;
   isLoadingMore: boolean;
+  isRefreshing?: boolean;
   hasMore: boolean;
   error: Error | null;
   onLoadMore: () => void;
@@ -28,6 +29,7 @@ export function FeedContent({
   papers,
   isLoading,
   isLoadingMore,
+  isRefreshing = false,
   hasMore,
   error,
   onLoadMore,
@@ -88,7 +90,18 @@ export function FeedContent({
 
   return (
     <>
-      <div className={`grid ${isCompact ? "gap-2" : "gap-3"}`} aria-busy={isLoadingMore || undefined}>
+      {/* Subtle refresh indicator */}
+      {isRefreshing && (
+        <div className="mb-2 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+          <RefreshCw className="h-3 w-3 animate-spin" />
+          <span>Updating…</span>
+        </div>
+      )}
+
+      <div
+        className={`grid ${isCompact ? "gap-2" : "gap-3"} ${isRefreshing ? "opacity-75 transition-opacity" : ""}`}
+        aria-busy={isLoadingMore || isRefreshing || undefined}
+      >
         {papers.map((paper) => (
           <PaperRow
             key={paper.arxivId}

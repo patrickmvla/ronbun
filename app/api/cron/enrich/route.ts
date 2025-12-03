@@ -32,7 +32,7 @@ const DEFAULT_RUN_EXTRACT = true;
 const DEFAULT_RUN_PWC = true;
 
 // LLM model (Groq via AI SDK)
-const EXTRACT_MODEL = process.env.GROQ_EXTRACT_MODEL || "llama-3.1-70b";
+const EXTRACT_MODEL = process.env.GROQ_EXTRACT_MODEL || "llama-3.3-70b-versatile";
 const ENV_TIER = process.env.GROQ_SERVICE_TIER?.trim(); // optional; omit if not set
 
 export async function POST(req: Request) {

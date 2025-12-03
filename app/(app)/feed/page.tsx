@@ -10,7 +10,7 @@ import { SearchNotice } from "@/components/feed/search-notice";
 import { FeedContent } from "@/components/feed/feed-content";
 import { useFeedFilters } from "@/hooks/use-feed-filters";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
-import { useInfinitePapers, buildArxivQuery } from "@/hooks/useInfinitePapers";
+import { useInfinitePapers, buildArxivQuery, usePrefetchPapers } from "@/hooks/useInfinitePapers";
 import { applyViewFilter } from "@/lib/utils/feed-filters";
 import { FEED_CONFIG } from "@/config/feed";
 
@@ -67,11 +67,30 @@ function FeedPageInner() {
     [categories, filters.query]
   );
 
+  // Prefetch hook for warming cache
+  const prefetchPapers = usePrefetchPapers();
+
+  // Prefetch other views on mount and when categories change
+  useEffect(() => {
+    const views = ["today", "week", "for-you"] as const;
+    const otherViews = views.filter((v) => v !== view);
+
+    // Prefetch other views in the background (low priority)
+    const timeout = setTimeout(() => {
+      otherViews.forEach((v) => {
+        prefetchPapers({ categories, view: v, pageSize: FEED_CONFIG.pageSize });
+      });
+    }, 1000); // Delay to prioritize current view
+
+    return () => clearTimeout(timeout);
+  }, [categories, view, prefetchPapers]);
+
   // Fetch papers with infinite scroll
   const {
     data,
     isPending,
     isFetchingNextPage,
+    isPlaceholderData,
     hasNextPage,
     fetchNextPage,
     error,
@@ -86,6 +105,9 @@ function FeedPageInner() {
     sortOrder: FEED_CONFIG.sortOrder,
     enabled: arxivQuery.length > 0 || categories.length > 0,
   });
+
+  // Show loading state only on initial load, not when using placeholder data
+  const isLoading = isPending && !isPlaceholderData;
 
   // Flatten pages and apply client-side filter as fallback
   // (DB source pre-filters, but arXiv source needs client-side filtering)
@@ -134,8 +156,9 @@ function FeedPageInner() {
       {/* Papers list */}
       <FeedContent
         papers={papers}
-        isLoading={isPending}
+        isLoading={isLoading}
         isLoadingMore={isFetchingNextPage}
+        isRefreshing={isPlaceholderData}
         hasMore={hasNextPage ?? false}
         error={error}
         onLoadMore={fetchNextPage}

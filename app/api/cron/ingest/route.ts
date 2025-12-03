@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 const DEFAULT_CATS = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.NE", "stat.ML"] as const;
 const DEFAULT_PAGES = 2;
 const DEFAULT_PAGE_SIZE = 25;
-const DEFAULT_DAYS = 3;
+const DEFAULT_DAYS = 2;
 
 export async function POST(req: Request) {
   let runId: string | null = null;
@@ -41,8 +41,8 @@ export async function POST(req: Request) {
     const PAGE_SIZE = clampInt(sizeParam, DEFAULT_PAGE_SIZE, 1, 50);
     const LOOKBACK_DAYS = clampInt(daysParam, DEFAULT_DAYS, 0, 30);
     const PRUNE_AUTHORS = asBool(pruneParam, false);
-    const MAX_MS = clampInt(maxMsParam, 45_000, 5_000, 5 * 60_000); // default 45s
-    const CONCURRENCY = clampInt(concurrencyParam, 3, 1, 8); // default 3
+    const MAX_MS = clampInt(maxMsParam, 120_000, 5_000, 5 * 60_000); // default 2 minutes
+    const CONCURRENCY = clampInt(concurrencyParam, 5, 1, 8); // default 5
 
     const deadline = Date.now() + MAX_MS;
 

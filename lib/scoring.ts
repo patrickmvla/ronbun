@@ -10,6 +10,19 @@ export type ScoreComponents = {
   watchlist: number; // 0..1 (matches user watchlists)
 };
 
+// Extended components for personalized scoring
+export type PersonalizedScoreComponents = ScoreComponents & {
+  viewed: number;      // 0..1 (penalty for already-seen papers)
+  implicit: number;    // 0..1 (category/author affinity from views)
+  collaborative: number; // 0..1 (boost from similar users)
+};
+
+export type PersonalizedScoreResult = {
+  global: number;        // 0..1 (base score without personalization)
+  personalized: number;  // 0..1 (score with personalization)
+  components: PersonalizedScoreComponents;
+};
+
 export type ScoreResult = {
   global: number; // 0..1
   components: ScoreComponents;
@@ -261,5 +274,160 @@ export function recomputeWithStars(prev: ScoreResult, stars: number, opts?: Scor
   return {
     global: clamp01(global),
     components: { ...prev.components, stars: s },
+  };
+}
+
+/* ========== Personalization Scoring ========== */
+
+/** User affinities derived from viewing patterns */
+export type UserAffinities = {
+  categories: Record<string, number>; // category -> normalized score 0-1
+  authors: Record<string, number>;    // normalized author name -> score
+  tasks: Record<string, number>;      // task -> score
+};
+
+/** View history entry */
+export type ViewHistoryEntry = {
+  paperId: string;
+  viewedAt: Date;
+};
+
+/** Personalization context for scoring */
+export type PersonalizationContext = {
+  viewHistory?: ViewHistoryEntry[];
+  affinities?: UserAffinities;
+  similarUserPapers?: Map<string, number>; // paperId -> boost score
+};
+
+/** Weights for personalized scoring */
+export const PERSONALIZED_WEIGHTS = {
+  base: 0.6,           // weight of base score (recency, code, stars, watchlist)
+  viewed: 0.15,        // weight for viewed penalty
+  implicit: 0.15,      // weight for implicit interest boost
+  collaborative: 0.1,  // weight for collaborative filtering boost
+};
+
+/**
+ * Viewed component: penalize papers the user has already seen.
+ * Returns 1 for unread papers, lower for recently viewed.
+ */
+export function viewedScore(
+  paperId: string,
+  viewHistory: ViewHistoryEntry[] | undefined,
+  opts: { penalty?: number; decayDays?: number; now?: Date } = {}
+): number {
+  if (!viewHistory?.length) return 1; // unread = full score
+
+  const penalty = opts.penalty ?? 0.7;
+  const decayDays = opts.decayDays ?? 7;
+  const now = opts.now ?? new Date();
+
+  const view = viewHistory.find((v) => v.paperId === paperId);
+  if (!view) return 1; // not viewed
+
+  // Decay the penalty over time (old views matter less)
+  const ageMs = now.getTime() - view.viewedAt.getTime();
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+  // penalty decays exponentially: penalty * 2^(-ageDays/decayDays)
+  const decayedPenalty = penalty * Math.pow(2, -ageDays / Math.max(1, decayDays));
+
+  return clamp01(1 - decayedPenalty);
+}
+
+/**
+ * Implicit interest component: based on user's viewing patterns.
+ * Uses pre-computed affinity scores for categories, authors, tasks.
+ */
+export function implicitInterestScore(
+  paper: PaperForScoring & { tasks?: string[] },
+  affinities: UserAffinities | undefined
+): number {
+  if (!affinities) return 0;
+
+  let score = 0;
+  let weights = 0;
+
+  // Category affinity (weight: 0.5)
+  if (paper.categories?.length && Object.keys(affinities.categories).length) {
+    const catScore =
+      paper.categories.reduce((acc, cat) => acc + (affinities.categories[cat] ?? 0), 0) /
+      paper.categories.length;
+    score += 0.5 * catScore;
+    weights += 0.5;
+  }
+
+  // Author affinity (weight: 0.3)
+  if (paper.authors?.length && Object.keys(affinities.authors).length) {
+    const authScore =
+      paper.authors.reduce((acc, auth) => {
+        const normalized = normalizeName(auth);
+        return acc + (affinities.authors[normalized] ?? 0);
+      }, 0) / paper.authors.length;
+    score += 0.3 * authScore;
+    weights += 0.3;
+  }
+
+  // Task affinity (weight: 0.2) - from structured extraction
+  if (paper.tasks?.length && Object.keys(affinities.tasks).length) {
+    const taskScore =
+      paper.tasks.reduce((acc, task) => {
+        const normalized = task.toLowerCase();
+        return acc + (affinities.tasks[normalized] ?? 0);
+      }, 0) / paper.tasks.length;
+    score += 0.2 * taskScore;
+    weights += 0.2;
+  }
+
+  return weights > 0 ? clamp01(score / weights) : 0;
+}
+
+/**
+ * Similar users component: collaborative filtering boost.
+ * Boost papers that similar users have engaged with.
+ */
+export function similarUsersScore(
+  paperId: string,
+  similarUserPapers: Map<string, number> | undefined
+): number {
+  if (!similarUserPapers) return 0;
+  return clamp01(similarUserPapers.get(paperId) ?? 0);
+}
+
+/**
+ * Compute personalized score combining base score with user context.
+ */
+export function computePersonalizedScore(
+  paper: PaperForScoring & { paperId?: string; tasks?: string[] },
+  watchlists: WatchlistInput[] = [],
+  personalization: PersonalizationContext = {},
+  opts?: ScoreOptions
+): PersonalizedScoreResult {
+  // Get base score
+  const base = computePaperScore(paper, watchlists, opts);
+  const paperId = paper.paperId ?? paper.arxivId ?? "";
+
+  // Personalization components
+  const v = viewedScore(paperId, personalization.viewHistory, { now: opts?.now });
+  const i = implicitInterestScore(paper, personalization.affinities);
+  const c = similarUsersScore(paperId, personalization.similarUserPapers);
+
+  // Compute personalized score
+  // viewed acts as a multiplier (penalty), while implicit and collaborative add boost
+  const personalized = clamp01(
+    PERSONALIZED_WEIGHTS.base * base.global * v + // base score with view penalty
+    PERSONALIZED_WEIGHTS.implicit * i +            // implicit interest boost
+    PERSONALIZED_WEIGHTS.collaborative * c         // collaborative boost
+  );
+
+  return {
+    global: base.global,
+    personalized,
+    components: {
+      ...base.components,
+      viewed: v,
+      implicit: i,
+      collaborative: c,
+    },
   };
 }

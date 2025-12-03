@@ -87,6 +87,35 @@ export default function PaperPage() {
     };
   }, [baseId]);
 
+  // Track paper view for personalization
+  React.useEffect(() => {
+    if (!paper?.arxivId) return;
+    const startTime = Date.now();
+
+    // Record view (fire and forget)
+    fetch("/api/user/views", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arxivId: paper.arxivId, source: "direct" }),
+    }).catch(() => {});
+
+    // Record duration on unmount if user spent meaningful time
+    return () => {
+      const durationMs = Date.now() - startTime;
+      if (durationMs > 5000) {
+        // Use sendBeacon for reliable delivery on page unload
+        const payload = JSON.stringify({
+          arxivId: paper.arxivId,
+          durationMs,
+          source: "direct",
+        });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon("/api/user/views", payload);
+        }
+      }
+    };
+  }, [paper?.arxivId]);
+
   // Derived links with graceful fallbacks
   const absUrl =
     paper?.links?.abs ?? (baseId ? `https://arxiv.org/abs/${baseId}` : "#");

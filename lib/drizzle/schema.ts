@@ -30,6 +30,22 @@ export const saveStatus = pgEnum("save_status", ["queued", "saved", "reading", "
 export const explainLevel = pgEnum("explain_level", ["eli5", "student", "expert"]);
 export const digestStatus = pgEnum("digest_status", ["scheduled", "sent", "failed"]);
 
+// New enums for personalization
+export const viewSource = pgEnum("view_source", ["feed", "search", "digest", "direct", "similar"]);
+export const interactionType = pgEnum("interaction_type", [
+  "abstract_expand",
+  "pdf_click",
+  "code_click",
+  "arxiv_click",
+  "tab_summary",
+  "tab_explainer",
+  "tab_reviewer",
+  "tab_leaderboard",
+  "share_click",
+  "copy_bibtex",
+]);
+export const interestType = pgEnum("interest_type", ["category", "author", "benchmark", "task"]);
+
 /* ================= Profiles ================= */
 
 export const profiles = pgTable(
@@ -399,6 +415,130 @@ export const ingestRuns = pgTable(
   })
 );
 
+/* ================= Paper Views (Personalization) ================= */
+
+export const paperViews = pgTable(
+  "paper_views",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull(),
+    paperId: uuid("paper_id")
+      .references(() => papers.id, { onDelete: "cascade" })
+      .notNull(),
+    viewedAt: timestamp("viewed_at", { withTimezone: true }).defaultNow().notNull(),
+    source: viewSource("source").notNull().default("feed"),
+    durationMs: integer("duration_ms"),
+    arxivIdBase: varchar("arxiv_id_base", { length: 32 }),
+  },
+  (t) => ({
+    idxUserViewed: index("idx_paper_views_user_viewed").on(t.userId, t.viewedAt),
+    idxUserPaper: index("idx_paper_views_user_paper").on(t.userId, t.paperId),
+    idxPaperViewed: index("idx_paper_views_paper_viewed").on(t.paperId, t.viewedAt),
+  })
+);
+
+export const paperViewsRelations = relations(paperViews, ({ one }) => ({
+  paper: one(papers, { fields: [paperViews.paperId], references: [papers.id] }),
+}));
+
+/* ================= Paper Interactions ================= */
+
+export const paperInteractions = pgTable(
+  "paper_interactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull(),
+    paperId: uuid("paper_id")
+      .references(() => papers.id, { onDelete: "cascade" })
+      .notNull(),
+    type: interactionType("type").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    meta: jsonb("meta").$type<Record<string, unknown>>(),
+  },
+  (t) => ({
+    idxUserCreated: index("idx_paper_interactions_user_created").on(t.userId, t.createdAt),
+    idxPaperType: index("idx_paper_interactions_paper_type").on(t.paperId, t.type),
+    idxUserPaper: index("idx_paper_interactions_user_paper").on(t.userId, t.paperId),
+  })
+);
+
+export const paperInteractionsRelations = relations(paperInteractions, ({ one }) => ({
+  paper: one(papers, { fields: [paperInteractions.paperId], references: [papers.id] }),
+}));
+
+/* ================= User Scores (Cached Personalized) ================= */
+
+export const userScores = pgTable(
+  "user_scores",
+  {
+    userId: uuid("user_id").notNull(),
+    paperId: uuid("paper_id")
+      .references(() => papers.id, { onDelete: "cascade" })
+      .notNull(),
+    personalizedScore: numeric("personalized_score").notNull().default("0"),
+    components: jsonb("components").$type<{
+      recency: number;
+      code: number;
+      stars: number;
+      watchlist: number;
+      viewed: number;
+      implicit: number;
+      collaborative: number;
+    }>(),
+    watchlistVersion: integer("watchlist_version").default(0),
+    computedAt: timestamp("computed_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ name: "pk_user_scores", columns: [t.userId, t.paperId] }),
+    idxUserScore: index("idx_user_scores_user_score").on(t.userId, t.personalizedScore),
+    idxComputed: index("idx_user_scores_computed").on(t.computedAt),
+    idxUserVersion: index("idx_user_scores_user_version").on(t.userId, t.watchlistVersion),
+  })
+);
+
+export const userScoresRelations = relations(userScores, ({ one }) => ({
+  paper: one(papers, { fields: [userScores.paperId], references: [papers.id] }),
+}));
+
+/* ================= User Interests (Derived Affinities) ================= */
+
+export const userInterests = pgTable(
+  "user_interests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull(),
+    type: interestType("type").notNull(),
+    value: text("value").notNull(),
+    normValue: text("norm_value"),
+    score: numeric("score").notNull().default("0"),
+    source: text("source").default("implicit"),
+    viewCount: integer("view_count").default(0),
+    saveCount: integer("save_count").default(0),
+    interactionCount: integer("interaction_count").default(0),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => ({
+    uniqInterest: uniqueIndex("uniq_user_interest").on(t.userId, t.type, t.value),
+    idxUserTypeScore: index("idx_user_interests_user_type_score").on(t.userId, t.type, t.score),
+    idxTypeValue: index("idx_user_interests_type_value").on(t.type, t.value),
+  })
+);
+
+/* ================= Watchlist Versions (Cache Invalidation) ================= */
+
+export const watchlistVersions = pgTable(
+  "watchlist_versions",
+  {
+    userId: uuid("user_id").primaryKey(),
+    version: integer("version").notNull().default(1),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => ({
+    idxUpdated: index("idx_watchlist_versions_updated").on(t.updatedAt),
+  })
+);
+
 /* ================= Type exports ================= */
 
 export type Profile = typeof profiles.$inferSelect;
@@ -445,3 +585,18 @@ export type NewDigest = typeof digests.$inferInsert;
 
 export type IngestRun = typeof ingestRuns.$inferSelect;
 export type NewIngestRun = typeof ingestRuns.$inferInsert;
+
+export type PaperView = typeof paperViews.$inferSelect;
+export type NewPaperView = typeof paperViews.$inferInsert;
+
+export type PaperInteraction = typeof paperInteractions.$inferSelect;
+export type NewPaperInteraction = typeof paperInteractions.$inferInsert;
+
+export type UserScore = typeof userScores.$inferSelect;
+export type NewUserScore = typeof userScores.$inferInsert;
+
+export type UserInterest = typeof userInterests.$inferSelect;
+export type NewUserInterest = typeof userInterests.$inferInsert;
+
+export type WatchlistVersion = typeof watchlistVersions.$inferSelect;
+export type NewWatchlistVersion = typeof watchlistVersions.$inferInsert;
